@@ -1,31 +1,33 @@
 <?php
-include 'db.php';
+session_start();
+require "db.php";
 
-if(isset($_POST['register'])) {
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-    $name = $_POST['name'];
-    $email = $_POST['email'];
-    $password = password_hash($_POST['password'], PASSWORD_DEFAULT);
+    $name  = trim($_POST["name"]);
+    $email = trim($_POST["email"]);
+    $pass  = $_POST["password"];
+
+    $hashed = password_hash($pass, PASSWORD_DEFAULT);
 
     $sql = "INSERT INTO users (name, email, password) VALUES (?, ?, ?)";
-    $params = array($name, $email, $password);
+    $params = [$name, $email, $hashed];
 
     $stmt = sqlsrv_query($conn, $sql, $params);
 
-    if($stmt) {
-        echo "Registration Successful!";
+    if ($stmt) {
+        header("Location: login.php");
+        exit();
     } else {
-        echo "Error!";
+        echo "Registration failed: ";
+        print_r(sqlsrv_errors());
     }
 }
 ?>
 
-<h2>Register</h2>
-<form method="POST">
-    Name: <input type="text" name="name" required><br><br>
-    Email: <input type="email" name="email" required><br><br>
-    Password: <input type="password" name="password" required><br><br>
-    <button type="submit" name="register">Register</button>
+<form method="post">
+    <input name="name" required placeholder="Name">
+    <input type="email" name="email" required placeholder="Email">
+    <input type="password" name="password" required placeholder="Password">
+    <button type="submit">Register</button>
 </form>
-
-<a href="login.php">Login</a>
