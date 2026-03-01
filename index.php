@@ -1,5 +1,6 @@
 <?php
 session_start();
+require_once __DIR__ . "/db.php";
 
 // Cache prevention
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
@@ -16,11 +17,39 @@ if (!isset($_SESSION["user_id"])) {
 $name = $_SESSION["name"] ?? "User";
 $email = $_SESSION["email"] ?? "";
 
-// Placeholder numbers (replace with DB counts in CP2)
-$totalStudents = 0;
-$totalTeachers = 0;
-$totalCourses = 0;
-$totalEnrollments = 0;
+function tableExists($conn, $schemaDotTable) {
+    $stmt = sqlsrv_query($conn, "SELECT OBJECT_ID(?) AS oid", [$schemaDotTable]);
+    if ($stmt === false) return false;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    sqlsrv_free_stmt($stmt);
+    return isset($row["oid"]) && $row["oid"] !== null;
+}
+
+function countRows($conn, $table) {
+    $sql = "SELECT COUNT(*) AS total FROM $table";
+    $stmt = sqlsrv_query($conn, $sql);
+    if ($stmt === false) return 0;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    sqlsrv_free_stmt($stmt);
+    return (int)($row["total"] ?? 0);
+}
+
+function resolveTable($conn, $baseName) {
+    $dbo = "dbo." . $baseName;
+    if (tableExists($conn, $dbo)) return $dbo;
+    if (tableExists($conn, $baseName)) return $baseName;
+    return $dbo;
+}
+
+$studentTable = resolveTable($conn, "STUDENT");
+$teacherTable = resolveTable($conn, "TEACHER");
+$courseTable = resolveTable($conn, "COURSE");
+$enrollmentTable = resolveTable($conn, "ENROLLMENT");
+
+$totalStudents = countRows($conn, $studentTable);
+$totalTeachers = countRows($conn, $teacherTable);
+$totalCourses = countRows($conn, $courseTable);
+$totalEnrollments = countRows($conn, $enrollmentTable);
 ?>
 <!DOCTYPE html>
 <html lang="en">
