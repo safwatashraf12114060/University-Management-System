@@ -13,7 +13,8 @@ if (!isset($_SESSION["user_id"])) {
 }
 
 function colExists($conn, $table, $column) {
-    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
+    $sql = "SELECT COL_LENGTH(?, ?) AS len";
+    $stmt = sqlsrv_query($conn, $sql, [$table, $column]);
     if ($stmt === false) return false;
     $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
     return isset($row["len"]) && $row["len"] !== null;
@@ -21,44 +22,72 @@ function colExists($conn, $table, $column) {
 
 $studentTable = "STUDENT";
 $deptTable = "DEPARTMENT";
+$studentTableDbo = "dbo." . $studentTable;
+$deptTableDbo = "dbo." . $deptTable;
 
-$hasStudentName = colExists($conn, "dbo.$studentTable", "student_name") || colExists($conn, $studentTable, "student_name");
-$hasName = colExists($conn, "dbo.$studentTable", "name") || colExists($conn, $studentTable, "name");
-$nameCol = $hasStudentName ? "student_name" : ($hasName ? "name" : "student_name");
+/* Detect STUDENT name column */
+$nameCandidates = ["student_name", "name", "full_name"];
+$nameCol = null;
+foreach ($nameCandidates as $c) {
+    if (colExists($conn, $studentTableDbo, $c) || colExists($conn, $studentTable, $c)) { $nameCol = $c; break; }
+}
+if ($nameCol === null) $nameCol = "name";
 
-$hasEmail = colExists($conn, "dbo.$studentTable", "email") || colExists($conn, $studentTable, "email");
-$hasPhone = colExists($conn, "dbo.$studentTable", "phone") || colExists($conn, $studentTable, "phone");
-$hasAddress = colExists($conn, "dbo.$studentTable", "address") || colExists($conn, $studentTable, "address");
-$hasSemester = colExists($conn, "dbo.$studentTable", "semester") || colExists($conn, $studentTable, "semester");
+/* Detect dept FK column */
+$deptFkCandidates = ["dept_id", "department_id"];
+$deptFkCol = null;
+foreach ($deptFkCandidates as $c) {
+    if (colExists($conn, $studentTableDbo, $c) || colExists($conn, $studentTable, $c)) { $deptFkCol = $c; break; }
+}
+if ($deptFkCol === null) $deptFkCol = "dept_id";
 
-$hasDeptId = colExists($conn, "dbo.$studentTable", "dept_id") || colExists($conn, $studentTable, "dept_id");
-$hasDepartmentId = colExists($conn, "dbo.$studentTable", "department_id") || colExists($conn, $studentTable, "department_id");
-$deptFkCol = $hasDeptId ? "dept_id" : ($hasDepartmentId ? "department_id" : "dept_id");
+/* Optional columns (only insert if exist in DB) */
+$hasEmail = colExists($conn, $studentTableDbo, "email") || colExists($conn, $studentTable, "email");
+$hasPhone = colExists($conn, $studentTableDbo, "phone") || colExists($conn, $studentTable, "phone");
+$hasAddress = colExists($conn, $studentTableDbo, "address") || colExists($conn, $studentTable, "address");
+$hasGender = colExists($conn, $studentTableDbo, "gender") || colExists($conn, $studentTable, "gender");
 
-$hasStudentCode = colExists($conn, "dbo.$studentTable", "student_code") || colExists($conn, $studentTable, "student_code");
-$hasRegistrationNo = colExists($conn, "dbo.$studentTable", "registration_no") || colExists($conn, $studentTable, "registration_no");
-$hasDob = colExists($conn, "dbo.$studentTable", "dob") || colExists($conn, $studentTable, "dob") || colExists($conn, "dbo.$studentTable", "date_of_birth") || colExists($conn, $studentTable, "date_of_birth");
-$dobCol = colExists($conn, "dbo.$studentTable", "dob") || colExists($conn, $studentTable, "dob") ? "dob" : "date_of_birth";
-$hasGender = colExists($conn, "dbo.$studentTable", "gender") || colExists($conn, $studentTable, "gender");
+$hasDob = (colExists($conn, $studentTableDbo, "dob") || colExists($conn, $studentTable, "dob")
+        || colExists($conn, $studentTableDbo, "date_of_birth") || colExists($conn, $studentTable, "date_of_birth"));
+$dobCol = (colExists($conn, $studentTableDbo, "dob") || colExists($conn, $studentTable, "dob")) ? "dob" : "date_of_birth";
 
+$hasSemester = colExists($conn, $studentTableDbo, "semester") || colExists($conn, $studentTable, "semester");
+$hasEnrollmentDate = colExists($conn, $studentTableDbo, "enrollment_date") || colExists($conn, $studentTable, "enrollment_date");
+
+/* Load departments */
 $departments = [];
-$ds = sqlsrv_query($conn, "SELECT dept_id, name FROM $deptTable ORDER BY name ASC");
-if ($ds) while ($r = sqlsrv_fetch_array($ds, SQLSRV_FETCH_ASSOC)) $departments[] = $r;
+$ds = sqlsrv_query($conn, "SELECT dept_id, name FROM $deptTableDbo ORDER BY name ASC");
+if ($ds !== false) {
+    while ($r = sqlsrv_fetch_array($ds, SQLSRV_FETCH_ASSOC)) {
+        $departments[] = $r;
+    }
+    sqlsrv_free_stmt($ds);
+}
 
-$semesterOptions = ["1st","2nd","3rd","4th","5th","6th","7th","8th"];
+/* Semester options must be INT for your DB */
+$semesterOptions = [
+    1 => "1st",
+    2 => "2nd",
+    3 => "3rd",
+    4 => "4th",
+    5 => "5th",
+    6 => "6th",
+    7 => "7th",
+    8 => "8th"
+];
 
 $error = "";
 $values = [
-  "student_code" => "",
-  "registration_no" => "",
-  "name" => "",
-  "email" => "",
-  "phone" => "",
-  "dob" => "",
-  "gender" => "",
-  "address" => "",
-  "dept_id" => "",
-  "semester" => ""
+    "student_code" => "",
+    "registration_no" => "",
+    "name" => "",
+    "email" => "",
+    "phone" => "",
+    "dob" => "",
+    "gender" => "",
+    "address" => "",
+    "dept_id" => "",
+    "semester" => ""
 ];
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
@@ -78,25 +107,45 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     } else {
         $cols = [$nameCol, $deptFkCol];
         $qs = ["?", "?"];
-        $params = [$values["name"], (int)$values["dept_id"]];
+        $params = [
+            $values["name"],
+            (int)$values["dept_id"]
+        ];
 
-        if ($hasStudentCode) { $cols[]="student_code"; $qs[]="?"; $params[] = ($values["student_code"] !== "" ? $values["student_code"] : null); }
-        if ($hasRegistrationNo) { $cols[]="registration_no"; $qs[]="?"; $params[] = ($values["registration_no"] !== "" ? $values["registration_no"] : null); }
-        if ($hasEmail) { $cols[]="email"; $qs[]="?"; $params[] = ($values["email"] !== "" ? $values["email"] : null); }
-        if ($hasPhone) { $cols[]="phone"; $qs[]="?"; $params[] = ($values["phone"] !== "" ? $values["phone"] : null); }
-        if ($hasAddress) { $cols[]="address"; $qs[]="?"; $params[] = ($values["address"] !== "" ? $values["address"] : null); }
-        if ($hasSemester) { $cols[]="semester"; $qs[]="?"; $params[] = ($values["semester"] !== "" ? $values["semester"] : null); }
-        if ($hasDob) { $cols[]=$dobCol; $qs[]="?"; $params[] = ($values["dob"] !== "" ? $values["dob"] : null); }
-        if ($hasGender) { $cols[]="gender"; $qs[]="?"; $params[] = ($values["gender"] !== "" ? $values["gender"] : null); }
+        if ($hasSemester) {
+            $cols[] = "semester";
+            $qs[] = "?";
+            $params[] = ($values["semester"] !== "" ? (int)$values["semester"] : null);
+        }
 
-        $sql = "INSERT INTO $studentTable (" . implode(",", $cols) . ") VALUES (" . implode(",", $qs) . ")";
+        if ($hasEnrollmentDate) {
+            $cols[] = "enrollment_date";
+            $qs[] = "?";
+            $params[] = date("Y-m-d");
+        }
+
+        if ($hasEmail) { $cols[] = "email"; $qs[] = "?"; $params[] = ($values["email"] !== "" ? $values["email"] : null); }
+        if ($hasPhone) { $cols[] = "phone"; $qs[] = "?"; $params[] = ($values["phone"] !== "" ? $values["phone"] : null); }
+        if ($hasAddress) { $cols[] = "address"; $qs[] = "?"; $params[] = ($values["address"] !== "" ? $values["address"] : null); }
+        if ($hasGender) { $cols[] = "gender"; $qs[] = "?"; $params[] = ($values["gender"] !== "" ? $values["gender"] : null); }
+
+        if ($hasDob) {
+            $cols[] = $dobCol;
+            $qs[] = "?";
+            $params[] = ($values["dob"] !== "" ? $values["dob"] : null);
+        }
+
+        $sql = "INSERT INTO $studentTableDbo (" . implode(",", $cols) . ") VALUES (" . implode(",", $qs) . ")";
         $st = sqlsrv_query($conn, $sql, $params);
 
-        if ($st) {
+        if ($st === false) {
+            $errs = sqlsrv_errors();
+            $error = "Insert failed: " . ($errs ? $errs[0]["message"] : "Unknown SQL error");
+        } else {
+            sqlsrv_free_stmt($st);
             header("Location: list.php");
             exit();
         }
-        $error = "Insert failed.";
     }
 }
 ?>
@@ -170,13 +219,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
           <div class="grid">
             <div>
               <label>Student ID *</label>
-              <?php if ($hasStudentCode): ?>
-                <input name="student_code" value="<?php echo htmlspecialchars($values["student_code"]); ?>" placeholder="e.g., S2023001" />
-              <?php elseif ($hasRegistrationNo): ?>
-                <input name="registration_no" value="<?php echo htmlspecialchars($values["registration_no"]); ?>" placeholder="e.g., S2023001" />
-              <?php else: ?>
-                <input value="Auto generated" disabled />
-              <?php endif; ?>
+              <input value="Auto generated" disabled />
             </div>
 
             <div>
@@ -185,23 +228,23 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
 
             <div>
-              <label>Email<?php echo $hasEmail ? " *" : ""; ?></label>
-              <input name="email" value="<?php echo htmlspecialchars($values["email"]); ?>" placeholder="john@example.com" <?php echo $hasEmail ? "required" : ""; ?> />
+              <label>Email</label>
+              <input name="email" value="<?php echo htmlspecialchars($values["email"]); ?>" placeholder="john@example.com" />
             </div>
 
             <div>
-              <label>Phone Number<?php echo $hasPhone ? " *" : ""; ?></label>
-              <input name="phone" value="<?php echo htmlspecialchars($values["phone"]); ?>" placeholder="+1 234 567 8900" <?php echo $hasPhone ? "required" : ""; ?> />
+              <label>Phone Number</label>
+              <input name="phone" value="<?php echo htmlspecialchars($values["phone"]); ?>" placeholder="+1 234 567 8900" />
             </div>
 
             <div>
-              <label>Date of Birth<?php echo $hasDob ? " *" : ""; ?></label>
-              <input type="date" name="dob" value="<?php echo htmlspecialchars($values["dob"]); ?>" <?php echo $hasDob ? "required" : ""; ?> />
+              <label>Date of Birth</label>
+              <input type="date" name="dob" value="<?php echo htmlspecialchars($values["dob"]); ?>" />
             </div>
 
             <div>
-              <label>Gender<?php echo $hasGender ? " *" : ""; ?></label>
-              <select name="gender" <?php echo $hasGender ? "required" : ""; ?>>
+              <label>Gender</label>
+              <select name="gender">
                 <option value="">Select Gender</option>
                 <option value="Male" <?php echo ($values["gender"]==="Male")?"selected":""; ?>>Male</option>
                 <option value="Female" <?php echo ($values["gender"]==="Female")?"selected":""; ?>>Female</option>
@@ -210,8 +253,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
 
             <div style="grid-column: 1 / -1;">
-              <label>Address<?php echo $hasAddress ? " *" : ""; ?></label>
-              <textarea name="address" placeholder="Enter full address" <?php echo $hasAddress ? "required" : ""; ?>><?php echo htmlspecialchars($values["address"]); ?></textarea>
+              <label>Address</label>
+              <textarea name="address" placeholder="Enter full address"><?php echo htmlspecialchars($values["address"]); ?></textarea>
             </div>
 
             <div>
@@ -219,7 +262,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
               <select name="dept_id" required>
                 <option value="">Select Department</option>
                 <?php foreach ($departments as $d): ?>
-                  <option value="<?php echo (int)$d["dept_id"]; ?>" <?php echo ((int)$values["dept_id"] === (int)$d["dept_id"]) ? "selected" : ""; ?>>
+                  <option value="<?php echo (int)$d["dept_id"]; ?>" <?php echo ((string)$values["dept_id"] === (string)$d["dept_id"]) ? "selected" : ""; ?>>
                     <?php echo htmlspecialchars((string)$d["name"]); ?>
                   </option>
                 <?php endforeach; ?>
@@ -227,12 +270,12 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
 
             <div>
-              <label>Semester<?php echo $hasSemester ? " *" : ""; ?></label>
-              <select name="semester" <?php echo $hasSemester ? "required" : ""; ?>>
+              <label>Semester</label>
+              <select name="semester">
                 <option value="">Select Semester</option>
-                <?php foreach ($semesterOptions as $opt): ?>
-                  <option value="<?php echo htmlspecialchars($opt); ?>" <?php echo ($values["semester"]===$opt)?"selected":""; ?>>
-                    <?php echo htmlspecialchars($opt); ?>
+                <?php foreach ($semesterOptions as $num => $label): ?>
+                  <option value="<?php echo (int)$num; ?>" <?php echo ((string)$values["semester"] === (string)$num) ? "selected" : ""; ?>>
+                    <?php echo htmlspecialchars($label); ?>
                   </option>
                 <?php endforeach; ?>
               </select>

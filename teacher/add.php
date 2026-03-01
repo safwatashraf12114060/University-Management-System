@@ -12,24 +12,24 @@ if (!isset($_SESSION["user_id"])) {
     exit();
 }
 
-function colExists($conn, $table, $column) {
-    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
-    if ($stmt === false) return false;
-    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
-    return isset($row["len"]) && $row["len"] !== null;
-}
-
-$hasEmail = colExists($conn, "dbo.TEACHER", "email") || colExists($conn, "TEACHER", "email");
-$hasPhone = colExists($conn, "dbo.TEACHER", "phone") || colExists($conn, "TEACHER", "phone");
-$hasDesignation = colExists($conn, "dbo.TEACHER", "designation") || colExists($conn, "TEACHER", "designation");
-$hasQualification = colExists($conn, "dbo.TEACHER", "qualification") || colExists($conn, "TEACHER", "qualification");
-$hasTeacherCode = colExists($conn, "dbo.TEACHER", "teacher_code") || colExists($conn, "TEACHER", "teacher_code");
-$hasHireDate = colExists($conn, "dbo.TEACHER", "hire_date") || colExists($conn, "TEACHER", "hire_date");
+$error = "";
+$values = [
+  "name" => "",
+  "email" => "",
+  "phone" => "",
+  "dept_id" => "",
+  "designation" => "",
+  "qualification" => "",
+  "hire_date" => ""
+];
 
 $departments = [];
-$ds = sqlsrv_query($conn, "SELECT dept_id, name FROM DEPARTMENT ORDER BY name ASC");
-if ($ds) {
-    while ($r = sqlsrv_fetch_array($ds, SQLSRV_FETCH_ASSOC)) $departments[] = $r;
+$ds = sqlsrv_query($conn, "SELECT dept_id, name FROM dbo.DEPARTMENT ORDER BY name ASC");
+if ($ds !== false) {
+    while ($r = sqlsrv_fetch_array($ds, SQLSRV_FETCH_ASSOC)) {
+        $departments[] = $r;
+    }
+    sqlsrv_free_stmt($ds);
 }
 
 $designationOptions = [
@@ -40,20 +40,7 @@ $designationOptions = [
   "Senior Lecturer"
 ];
 
-$error = "";
-$values = [
-  "teacher_code" => "",
-  "name" => "",
-  "email" => "",
-  "phone" => "",
-  "dept_id" => "",
-  "designation" => "",
-  "qualification" => "",
-  "hire_date" => ""
-];
-
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    $values["teacher_code"] = trim($_POST["teacher_code"] ?? "");
     $values["name"] = trim($_POST["name"] ?? "");
     $values["email"] = trim($_POST["email"] ?? "");
     $values["phone"] = trim($_POST["phone"] ?? "");
@@ -62,31 +49,32 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $values["qualification"] = trim($_POST["qualification"] ?? "");
     $values["hire_date"] = trim($_POST["hire_date"] ?? "");
 
-    if ($values["name"] === "" || $values["dept_id"] === "") {
-        $error = "Name and department are required.";
+    if ($values["name"] === "" || $values["dept_id"] === "" || $values["hire_date"] === "") {
+        $error = "Name, department and joining date are required.";
     } else {
-        $cols = ["name", "dept_id"];
-        $qs = ["?", "?"];
-        $params = [$values["name"], (int)$values["dept_id"]];
+        $sql = "INSERT INTO dbo.TEACHER (name, dept_id, email, phone, designation, qualification, hire_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)";
 
-        if ($hasTeacherCode) { $cols[]="teacher_code"; $qs[]="?"; $params[] = ($values["teacher_code"] !== "" ? $values["teacher_code"] : null); }
-        if ($hasEmail) { $cols[]="email"; $qs[]="?"; $params[] = ($values["email"] !== "" ? $values["email"] : null); }
-        if ($hasPhone) { $cols[]="phone"; $qs[]="?"; $params[] = ($values["phone"] !== "" ? $values["phone"] : null); }
-        if ($hasDesignation) { $cols[]="designation"; $qs[]="?"; $params[] = ($values["designation"] !== "" ? $values["designation"] : null); }
-        if ($hasQualification) { $cols[]="qualification"; $qs[]="?"; $params[] = ($values["qualification"] !== "" ? $values["qualification"] : null); }
-        if ($hasHireDate) {
-            $cols[]="hire_date"; $qs[]="?";
-            $params[] = ($values["hire_date"] !== "" ? $values["hire_date"] : null);
-        }
+        $params = [
+            $values["name"],
+            (int)$values["dept_id"],
+            ($values["email"] !== "" ? $values["email"] : null),
+            ($values["phone"] !== "" ? $values["phone"] : null),
+            ($values["designation"] !== "" ? $values["designation"] : null),
+            ($values["qualification"] !== "" ? $values["qualification"] : null),
+            ($values["hire_date"] !== "" ? $values["hire_date"] : null)
+        ];
 
-        $sql = "INSERT INTO TEACHER (" . implode(",", $cols) . ") VALUES (" . implode(",", $qs) . ")";
         $st = sqlsrv_query($conn, $sql, $params);
 
-        if ($st) {
+        if ($st === false) {
+            $errs = sqlsrv_errors();
+            $error = "Insert failed: " . ($errs ? $errs[0]["message"] : "Unknown SQL error");
+        } else {
+            sqlsrv_free_stmt($st);
             header("Location: list.php");
             exit();
         }
-        $error = "Insert failed.";
     }
 }
 ?>
@@ -206,17 +194,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         <form method="post" action="">
           <div class="grid">
-            <?php if ($hasTeacherCode): ?>
-            <div>
-              <label for="teacher_code">Teacher ID *</label>
-              <input id="teacher_code" name="teacher_code" value="<?php echo htmlspecialchars($values["teacher_code"]); ?>" placeholder="e.g., T001" />
-            </div>
-            <?php else: ?>
             <div>
               <label>Teacher ID</label>
               <input value="Auto generated" disabled />
             </div>
-            <?php endif; ?>
 
             <div>
               <label for="name">Full Name *</label>
@@ -224,13 +205,13 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
 
             <div>
-              <label for="email">Email<?php echo $hasEmail ? " *" : ""; ?></label>
-              <input id="email" name="email" value="<?php echo htmlspecialchars($values["email"]); ?>" placeholder="john.smith@uni.edu" <?php echo $hasEmail ? "required" : ""; ?> />
+              <label for="email">Email</label>
+              <input id="email" name="email" value="<?php echo htmlspecialchars($values["email"]); ?>" placeholder="john.smith@uni.edu" />
             </div>
 
             <div>
-              <label for="phone">Phone Number<?php echo $hasPhone ? " *" : ""; ?></label>
-              <input id="phone" name="phone" value="<?php echo htmlspecialchars($values["phone"]); ?>" placeholder="+1 234 567 8900" <?php echo $hasPhone ? "required" : ""; ?> />
+              <label for="phone">Phone Number</label>
+              <input id="phone" name="phone" value="<?php echo htmlspecialchars($values["phone"]); ?>" placeholder="+1 234 567 8900" />
             </div>
 
             <div>
@@ -246,8 +227,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
 
             <div>
-              <label for="designation">Designation<?php echo $hasDesignation ? " *" : ""; ?></label>
-              <select id="designation" name="designation" <?php echo $hasDesignation ? "required" : ""; ?>>
+              <label for="designation">Designation</label>
+              <select id="designation" name="designation">
                 <option value="">Select Designation</option>
                 <?php foreach ($designationOptions as $opt): ?>
                   <option value="<?php echo htmlspecialchars($opt); ?>" <?php echo ($values["designation"] === $opt) ? "selected" : ""; ?>>
@@ -258,13 +239,13 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
 
             <div>
-              <label for="qualification">Qualification<?php echo $hasQualification ? " *" : ""; ?></label>
-              <input id="qualification" name="qualification" value="<?php echo htmlspecialchars($values["qualification"]); ?>" placeholder="e.g., Ph.D. in Computer Science" <?php echo $hasQualification ? "required" : ""; ?> />
+              <label for="qualification">Qualification</label>
+              <input id="qualification" name="qualification" value="<?php echo htmlspecialchars($values["qualification"]); ?>" placeholder="e.g., Ph.D. in Computer Science" />
             </div>
 
             <div>
-              <label for="hire_date">Joining Date<?php echo $hasHireDate ? " *" : ""; ?></label>
-              <input id="hire_date" name="hire_date" type="date" value="<?php echo htmlspecialchars($values["hire_date"]); ?>" <?php echo $hasHireDate ? "required" : ""; ?> />
+              <label for="hire_date">Joining Date *</label>
+              <input id="hire_date" name="hire_date" type="date" value="<?php echo htmlspecialchars($values["hire_date"]); ?>" required />
             </div>
           </div>
 

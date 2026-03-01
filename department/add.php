@@ -12,31 +12,6 @@ if (!isset($_SESSION["user_id"])) {
     exit();
 }
 
-function colExists($conn, $table, $column) {
-    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
-    if ($stmt === false) return false;
-    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
-    return isset($row["len"]) && $row["len"] !== null;
-}
-
-$deptTable = "DEPARTMENT";
-
-$hasName = colExists($conn, "dbo.$deptTable", "name") || colExists($conn, $deptTable, "name");
-$nameCol = "name";
-
-$codeCandidates = ["department_code", "dept_code", "code"];
-$headCandidates = ["department_head", "dept_head", "head"];
-
-$codeCol = null;
-foreach ($codeCandidates as $c) {
-    if (colExists($conn, "dbo.$deptTable", $c) || colExists($conn, $deptTable, $c)) { $codeCol = $c; break; }
-}
-
-$headCol = null;
-foreach ($headCandidates as $c) {
-    if (colExists($conn, "dbo.$deptTable", $c) || colExists($conn, $deptTable, $c)) { $headCol = $c; break; }
-}
-
 $error = "";
 $values = [
   "dept_name" => "",
@@ -52,30 +27,23 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     if ($values["dept_name"] === "") {
         $error = "Department name is required.";
     } else {
-        $cols = [$nameCol];
-        $qs = ["?"];
-        $params = [$values["dept_name"]];
+        $sql = "INSERT INTO dbo.DEPARTMENT (name, dept_code, dept_head) VALUES (?, ?, ?)";
+        $params = [
+            $values["dept_name"],
+            ($values["dept_code"] !== "" ? $values["dept_code"] : null),
+            ($values["dept_head"] !== "" ? $values["dept_head"] : null)
+        ];
 
-        if ($codeCol !== null) {
-            $cols[] = $codeCol;
-            $qs[] = "?";
-            $params[] = ($values["dept_code"] !== "" ? $values["dept_code"] : null);
-        }
-
-        if ($headCol !== null) {
-            $cols[] = $headCol;
-            $qs[] = "?";
-            $params[] = ($values["dept_head"] !== "" ? $values["dept_head"] : null);
-        }
-
-        $sql = "INSERT INTO $deptTable (" . implode(",", $cols) . ") VALUES (" . implode(",", $qs) . ")";
         $st = sqlsrv_query($conn, $sql, $params);
 
-        if ($st) {
+        if ($st === false) {
+            $errs = sqlsrv_errors();
+            $error = "Insert failed: " . ($errs ? $errs[0]["message"] : "Unknown SQL error");
+        } else {
+            sqlsrv_free_stmt($st);
             header("Location: list.php");
             exit();
         }
-        $error = "Insert failed.";
     }
 }
 ?>

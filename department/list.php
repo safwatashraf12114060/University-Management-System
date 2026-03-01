@@ -58,6 +58,7 @@ $totalRows = 0;
 if ($countStmt) {
     $r = sqlsrv_fetch_array($countStmt, SQLSRV_FETCH_ASSOC);
     $totalRows = (int)($r["total"] ?? 0);
+    sqlsrv_free_stmt($countStmt);
 }
 $totalPages = (int)ceil(max(1, $totalRows) / $perPage);
 
@@ -76,7 +77,10 @@ $params2 = array_merge($params, [$offset, $perPage]);
 
 $stmt = sqlsrv_query($conn, $listSql, $params2);
 $rows = [];
-if ($stmt) while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) $rows[] = $row;
+if ($stmt) {
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) $rows[] = $row;
+    sqlsrv_free_stmt($stmt);
+}
 
 function pageUrl($p, $q) {
     $qs = [];
@@ -102,6 +106,9 @@ function pageUrl($p, $q) {
     .nav a{display:flex;align-items:center;gap:12px;padding:12px 12px;border-radius:12px;color:var(--text);text-decoration:none;font-weight:700;opacity:.92;}
     .nav a:hover{background:rgba(47,60,255,0.07);opacity:1;}
     .nav a.active{background:var(--primary);color:#fff;box-shadow:0 10px 18px rgba(47,60,255,0.18);}
+    .nav svg{width:18px;height:18px;flex:0 0 auto;}
+    .nav a.active svg path,.nav a.active svg rect,.nav a.active svg circle{stroke:#fff;}
+
     .content{flex:1;display:flex;flex-direction:column;min-width:0;}
     .topbar{height:64px;background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 18px;}
     .logout{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);font-weight:800;padding:10px 12px;border-radius:12px;border:1px solid var(--border);background:#fff;}
@@ -135,13 +142,69 @@ function pageUrl($p, $q) {
   <aside class="sidebar">
     <div class="brand">UMS</div>
     <nav class="nav">
-      <a href="../index.php">Dashboard</a>
-      <a href="../student/list.php">Students</a>
-      <a href="../teacher/list.php">Teachers</a>
-      <a class="active" href="list.php">Departments</a>
-      <a href="../course/list.php">Courses</a>
-      <a href="../enrollment/list.php">Enrollments</a>
-      <a href="../result/list.php">Results</a>
+      <a href="../index.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
+          <rect x="14" y="3" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
+          <rect x="3" y="14" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
+          <rect x="14" y="14" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
+        </svg>
+        Dashboard
+      </a>
+
+      <a href="../student/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="7" r="4" stroke="#0f172a" stroke-width="2"/>
+          <path d="M4 21v-2a8 8 0 0 1 16 0v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        Students
+      </a>
+
+      <a href="../teacher/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="7" r="4" stroke="#0f172a" stroke-width="2"/>
+          <path d="M4 21v-2a8 8 0 0 1 16 0v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        Teachers
+      </a>
+
+      <a class="active" href="list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M4 21V8l8-5 8 5v13" stroke="#0f172a" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M9 21v-6h6v6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        Departments
+      </a>
+
+      <a href="../course/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M4 4v15.5" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M20 22V6a2 2 0 0 0-2-2H6.5A2.5 2.5 0 0 0 4 6.5" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        Courses
+      </a>
+
+      <a href="../enrollment/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M8 6h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M8 12h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M8 18h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M3 6h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
+          <path d="M3 12h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
+          <path d="M3 18h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        Enrollments
+      </a>
+
+      <a href="../result/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M7 3h10a2 2 0 0 1 2 2v16l-2-1-2 1-2-1-2 1-2-1-2 1V5a2 2 0 0 1 2-2Z" stroke="#0f172a" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M9 8h6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M9 12h6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        Results
+      </a>
     </nav>
   </aside>
 
