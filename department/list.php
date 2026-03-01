@@ -154,8 +154,9 @@ function pageUrl($p, $q) {
 
       <a href="../student/list.php">
         <svg viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="7" r="4" stroke="#0f172a" stroke-width="2"/>
-          <path d="M4 21v-2a8 8 0 0 1 16 0v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="9" cy="7" r="4" stroke="#0f172a" stroke-width="2"/>
+          <path d="M17 11c2.2 0 4 1.8 4 4v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M1 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
         </svg>
         Students
       </a>
