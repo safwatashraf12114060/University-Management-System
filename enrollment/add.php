@@ -17,587 +17,408 @@ if (!isset($_SESSION["csrf_token"])) {
 }
 
 $debug = (int)($_GET["debug"] ?? 0) === 1;
-$MAX_CREDITS = 18;
 
 function h($v) {
     return htmlspecialchars((string)$v, ENT_QUOTES, "UTF-8");
 }
 
-function timeToMinutes($t) {
-    if ($t instanceof DateTime) {
-        return ((int)$t->format("H")) * 60 + (int)$t->format("i");
-    }
-    if (is_string($t) && $t !== "") {
-        $parts = explode(":", $t);
-        $h = (int)($parts[0] ?? 0);
-        $m = (int)($parts[1] ?? 0);
-        return $h * 60 + $m;
-    }
-    return null;
+function colExists($conn, $table, $column) {
+    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
+    if ($stmt === false) return false;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    return isset($row["len"]) && $row["len"] !== null;
 }
 
-function isPassingGrade($grade) {
-    if ($grade === null) return false;
-    $g = strtoupper(trim((string)$grade));
-    return $g !== "" && $g !== "F";
+$studentTable = "dbo.STUDENT";
+$courseTable  = "dbo.COURSE";
+$enrollTable  = "dbo.ENROLLMENT";
+
+$studentNameCol = "name";
+if (colExists($conn, $studentTable, "student_name")) $studentNameCol = "student_name";
+if (colExists($conn, $studentTable, "full_name")) $studentNameCol = "full_name";
+
+$courseNameCol = "course_name";
+if (colExists($conn, $courseTable, "name")) $courseNameCol = "name";
+
+$courseCodeCol = null;
+foreach (["course_code", "code"] as $cand) {
+    if (colExists($conn, $courseTable, $cand)) { $courseCodeCol = $cand; break; }
 }
 
-function addSqlsrvError($baseMsg, $debug) {
-    if (!$debug) return $baseMsg;
-    $e = sqlsrv_errors();
-    return $baseMsg . "\n" . print_r($e, true);
-}
+$creditCol = "credit_hours";
+if (colExists($conn, $courseTable, "credits")) $creditCol = "credits";
 
-$error = "";
-$ok = "";
+$MAX_CREDITS = 18;
 
-/* Load students */
 $students = [];
-$st = sqlsrv_query($conn, "SELECT student_id, name FROM STUDENT ORDER BY name ASC");
+$st = sqlsrv_query($conn, "SELECT student_id, $studentNameCol AS student_name FROM $studentTable ORDER BY $studentNameCol ASC");
 if ($st !== false) {
     while ($r = sqlsrv_fetch_array($st, SQLSRV_FETCH_ASSOC)) $students[] = $r;
+    sqlsrv_free_stmt($st);
 }
 
-/* Load courses */
 $courses = [];
-$ct = sqlsrv_query(
-    $conn,
-    "SELECT course_id, course_name, credit_hours, schedule_day, start_time, end_time
-     FROM COURSE
-     ORDER BY course_name ASC"
-);
-if ($ct !== false) {
-    while ($r = sqlsrv_fetch_array($ct, SQLSRV_FETCH_ASSOC)) {
-        $courses[] = $r;
-    }
+$courseSelectCols = "course_id, $courseNameCol AS course_name, $creditCol AS credit_hours";
+if ($courseCodeCol !== null) $courseSelectCols .= ", $courseCodeCol AS course_code";
+$cs = sqlsrv_query($conn, "SELECT $courseSelectCols FROM $courseTable ORDER BY " . ($courseCodeCol ? "$courseCodeCol ASC" : "$courseNameCol ASC"));
+if ($cs !== false) {
+    while ($r = sqlsrv_fetch_array($cs, SQLSRV_FETCH_ASSOC)) $courses[] = $r;
+    sqlsrv_free_stmt($cs);
 }
 
-function getExistingEnrollments($conn, $studentId, $semester, $year) {
-    $sql = "
-        SELECT c.course_id, c.course_name, c.credit_hours, c.schedule_day, c.start_time, c.end_time
-        FROM ENROLLMENT e
-        JOIN COURSE c ON c.course_id = e.course_id
-        WHERE e.student_id = ? AND e.semester = ? AND e.year = ?
-    ";
-    $st = sqlsrv_query($conn, $sql, [$studentId, $semester, $year]);
-    $rows = [];
-    if ($st !== false) {
-        while ($r = sqlsrv_fetch_array($st, SQLSRV_FETCH_ASSOC)) $rows[] = $r;
-    }
-    return $rows;
-}
+$errorMsg = "";
+$okMsg = "";
 
-function getCurrentCredits($conn, $studentId, $semester, $year) {
-    $sql = "
-        SELECT ISNULL(SUM(c.credit_hours), 0) AS total_credits
-        FROM ENROLLMENT e
-        JOIN COURSE c ON c.course_id = e.course_id
-        WHERE e.student_id = ? AND e.semester = ? AND e.year = ?
-    ";
-    $st = sqlsrv_query($conn, $sql, [$studentId, $semester, $year]);
-    if ($st === false) return 0.0;
-    $row = sqlsrv_fetch_array($st, SQLSRV_FETCH_ASSOC);
-    return (float)($row["total_credits"] ?? 0);
-}
+$values = [
+    "student_id" => "",
+    "semester" => "",
+    "year" => "",
+    "course_ids" => []
+];
 
-function hasScheduleConflict($aDay, $aStart, $aEnd, $bDay, $bStart, $bEnd) {
-    if ($aDay === "" || $bDay === "") return false;
-    if (strcasecmp($aDay, $bDay) !== 0) return false;
-
-    $aS = timeToMinutes($aStart);
-    $aE = timeToMinutes($aEnd);
-    $bS = timeToMinutes($bStart);
-    $bE = timeToMinutes($bEnd);
-
-    if ($aS === null || $aE === null || $bS === null || $bE === null) return false;
-    return ($aS < $bE && $aE > $bS);
-}
-
-function prerequisiteSatisfied($conn, $studentId, $courseId) {
-    $preSql = "SELECT prerequisite_course_id FROM PREREQUISITE WHERE course_id = ?";
-    $preSt = sqlsrv_query($conn, $preSql, [$courseId]);
-    if ($preSt === false) return true;
-
-    while ($pr = sqlsrv_fetch_array($preSt, SQLSRV_FETCH_ASSOC)) {
-        $preCourseId = (int)($pr["prerequisite_course_id"] ?? 0);
-        if ($preCourseId > 0) {
-            $passSql = "
-                SELECT TOP 1 r.grade
-                FROM RESULT r
-                JOIN ENROLLMENT e ON e.enrollment_id = r.enrollment_id
-                WHERE e.student_id = ? AND e.course_id = ?
-                ORDER BY r.result_id DESC
-            ";
-            $passSt = sqlsrv_query($conn, $passSql, [$studentId, $preCourseId]);
-            $passRow = $passSt ? sqlsrv_fetch_array($passSt, SQLSRV_FETCH_ASSOC) : null;
-            $grade = $passRow["grade"] ?? null;
-            if (!isPassingGrade($grade)) return false;
-        }
-    }
-    return true;
-}
-
-/* POST submit */
-$selectedStudentId = (int)($_POST["student_id"] ?? 0);
-$selectedSemester = trim($_POST["semester"] ?? "");
-$selectedYear = (int)($_POST["year"] ?? 0);
-$selectedCourseIds = $_POST["course_ids"] ?? [];
-if (!is_array($selectedCourseIds)) $selectedCourseIds = [];
+$semesterOptions = ["Spring", "Summer", "Fall"];
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $token = (string)($_POST["csrf_token"] ?? "");
     if (!hash_equals($_SESSION["csrf_token"], $token)) {
-        $error = "Invalid request token.";
+        $errorMsg = "Invalid request token.";
     } else {
-        if ($selectedStudentId <= 0 || $selectedSemester === "" || $selectedYear <= 0 || count($selectedCourseIds) === 0) {
-            $error = "All fields are required.";
-        } else {
-            $selectedCourseIds = array_values(array_unique(array_map("intval", $selectedCourseIds)));
-            $selectedCourseIds = array_filter($selectedCourseIds, fn($x) => $x > 0);
+        $values["student_id"] = trim((string)($_POST["student_id"] ?? ""));
+        $values["semester"] = trim((string)($_POST["semester"] ?? ""));
+        $values["year"] = trim((string)($_POST["year"] ?? ""));
+        $values["course_ids"] = $_POST["course_ids"] ?? [];
+        if (!is_array($values["course_ids"])) $values["course_ids"] = [];
 
-            if (count($selectedCourseIds) === 0) {
-                $error = "Please select at least one course.";
-            } else {
-                $courseMap = [];
-                foreach ($courses as $c) {
-                    $cid = (int)($c["course_id"] ?? 0);
-                    if ($cid > 0) $courseMap[$cid] = $c;
-                }
+        $studentId = (int)$values["student_id"];
+        $year = (int)$values["year"];
 
-                foreach ($selectedCourseIds as $cid) {
-                    if (!isset($courseMap[$cid])) {
-                        $error = "Selected course not found.";
-                        break;
-                    }
-                }
-            }
+        $courseIds = [];
+        foreach ($values["course_ids"] as $cid) {
+            $cidInt = (int)$cid;
+            if ($cidInt > 0) $courseIds[] = $cidInt;
         }
+        $courseIds = array_values(array_unique($courseIds));
 
-        if ($error === "") {
-            $existing = getExistingEnrollments($conn, $selectedStudentId, $selectedSemester, $selectedYear);
-            $currentCredits = getCurrentCredits($conn, $selectedStudentId, $selectedSemester, $selectedYear);
-
-            $selectedCourseRows = [];
-            $selectedCredits = 0.0;
-            foreach ($selectedCourseIds as $cid) {
-                $row = null;
-                foreach ($courses as $c) {
-                    if ((int)$c["course_id"] === (int)$cid) { $row = $c; break; }
-                }
-                if ($row) {
-                    $selectedCourseRows[] = $row;
-                    $selectedCredits += (float)($row["credit_hours"] ?? 0);
-                }
+        if ($studentId <= 0) {
+            $errorMsg = "Student is required.";
+        } elseif ($values["semester"] === "") {
+            $errorMsg = "Semester is required.";
+        } elseif ($year < 2000 || $year > 2100) {
+            $errorMsg = "Valid year is required.";
+        } elseif (count($courseIds) === 0) {
+            $errorMsg = "Please select at least one course.";
+        } else {
+            // Calculate selected credits
+            $selectedCredits = 0;
+            $courseCreditMap = [];
+            foreach ($courses as $c) {
+                $cid = (int)($c["course_id"] ?? 0);
+                $cr = (int)($c["credit_hours"] ?? 0);
+                if ($cid > 0) $courseCreditMap[$cid] = $cr;
             }
+            foreach ($courseIds as $cid) $selectedCredits += (int)($courseCreditMap[$cid] ?? 0);
 
-            if (($currentCredits + $selectedCredits) > $MAX_CREDITS) {
-                $error = "Credit limit exceeded.";
-            }
+            if ($selectedCredits > $MAX_CREDITS) {
+                $errorMsg = "Selected credits exceed maximum ($MAX_CREDITS).";
+            } else {
+                // Insert each enrollment row
+                $insertSql = "
+                    INSERT INTO $enrollTable (student_id, course_id, semester, year, enrollment_date)
+                    VALUES (?, ?, ?, ?, ?)
+                ";
 
-            if ($error === "") {
-                $dupSql = "
-                    SELECT TOP 1 enrollment_id
-                    FROM ENROLLMENT
+                $today = date("Y-m-d");
+                $connOk = true;
+
+                // Optional: avoid duplicates for same term + student + course
+                $existsSql = "
+                    SELECT TOP 1 1 AS ok
+                    FROM $enrollTable
                     WHERE student_id = ? AND course_id = ? AND semester = ? AND year = ?
                 ";
-                foreach ($selectedCourseIds as $cid) {
-                    $dupSt = sqlsrv_query($conn, $dupSql, [$selectedStudentId, $cid, $selectedSemester, $selectedYear]);
-                    if ($dupSt !== false && sqlsrv_fetch_array($dupSt, SQLSRV_FETCH_ASSOC)) {
-                        $error = "Duplicate enrollment is not allowed.";
+
+                foreach ($courseIds as $cid) {
+                    $ex = sqlsrv_query($conn, $existsSql, [$studentId, $cid, $values["semester"], $year]);
+                    $already = false;
+                    if ($ex !== false) {
+                        $row = sqlsrv_fetch_array($ex, SQLSRV_FETCH_ASSOC);
+                        $already = $row ? true : false;
+                        sqlsrv_free_stmt($ex);
+                    }
+
+                    if ($already) {
+                        continue;
+                    }
+
+                    $ins = sqlsrv_query($conn, $insertSql, [$studentId, $cid, $values["semester"], $year, $today]);
+                    if ($ins === false) {
+                        $connOk = false;
+                        $errorMsg = "Insert failed.";
+                        if ($debug) $errorMsg .= " " . print_r(sqlsrv_errors(), true);
                         break;
                     }
-                }
-            }
-
-            if ($error === "") {
-                foreach ($selectedCourseIds as $cid) {
-                    if (!prerequisiteSatisfied($conn, $selectedStudentId, $cid)) {
-                        $error = "Prerequisite not satisfied.";
-                        break;
-                    }
-                }
-            }
-
-            if ($error === "") {
-                $allExisting = $existing;
-                $toCheck = $selectedCourseRows;
-
-                foreach ($toCheck as $sel) {
-                    $selDay = (string)($sel["schedule_day"] ?? "");
-                    $selStart = $sel["start_time"] ?? null;
-                    $selEnd = $sel["end_time"] ?? null;
-
-                    foreach ($allExisting as $ex) {
-                        if (hasScheduleConflict(
-                            $selDay, $selStart, $selEnd,
-                            (string)($ex["schedule_day"] ?? ""), $ex["start_time"] ?? null, $ex["end_time"] ?? null
-                        )) {
-                            $error = "Schedule conflict detected.";
-                            break 2;
-                        }
-                    }
+                    sqlsrv_free_stmt($ins);
                 }
 
-                if ($error === "") {
-                    $n = count($toCheck);
-                    for ($i = 0; $i < $n; $i++) {
-                        for ($j = $i + 1; $j < $n; $j++) {
-                            $a = $toCheck[$i];
-                            $b = $toCheck[$j];
-                            if (hasScheduleConflict(
-                                (string)($a["schedule_day"] ?? ""), $a["start_time"] ?? null, $a["end_time"] ?? null,
-                                (string)($b["schedule_day"] ?? ""), $b["start_time"] ?? null, $b["end_time"] ?? null
-                            )) {
-                                $error = "Schedule conflict detected.";
-                                break 2;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if ($error === "") {
-                sqlsrv_begin_transaction($conn);
-
-                $insSql = "
-                    INSERT INTO ENROLLMENT (student_id, course_id, enrollment_date, semester, year)
-                    VALUES (?, ?, CAST(GETDATE() AS date), ?, ?)
-                ";
-
-                $okAll = true;
-                foreach ($selectedCourseIds as $cid) {
-                    $insSt = sqlsrv_query($conn, $insSql, [$selectedStudentId, $cid, $selectedSemester, $selectedYear]);
-                    if ($insSt === false) {
-                        $okAll = false;
-                        $error = addSqlsrvError("Insert failed.", $debug);
-                        break;
-                    }
-                }
-
-                if ($okAll) {
-                    sqlsrv_commit($conn);
-                    header("Location: list.php?semester=" . urlencode($selectedSemester) . "&year=" . urlencode((string)$selectedYear) . "&success=1");
+                if ($connOk && $errorMsg === "") {
+                    header("Location: list.php?success=1");
                     exit();
-                } else {
-                    sqlsrv_rollback($conn);
                 }
             }
         }
     }
-}
-
-/* Credit summary default (for UI) */
-$uiCurrentCredits = 0.0;
-if ($selectedStudentId > 0 && $selectedSemester !== "" && $selectedYear > 0) {
-    $uiCurrentCredits = getCurrentCredits($conn, $selectedStudentId, $selectedSemester, $selectedYear);
 }
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Enroll Student - UMS</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Enroll Student</title>
   <style>
-    :root{
-      --bg:#f5f7fb;
-      --card:#ffffff;
-      --text:#0f172a;
-      --muted:#64748b;
-      --border:#e5e7eb;
-      --primary:#2f3cff;
-      --primary-weak:rgba(47,60,255,0.12);
-      --shadow:0 10px 25px rgba(15,23,42,0.08);
-      --radius:14px;
-      --good:#10b981;
-      --danger:#ef4444;
-    }
+    :root{--bg:#f4f6fb;--card:#ffffff;--text:#0f172a;--muted:#64748b;--primary:#2f3cff;--border:#e5e7eb;--shadow2:0 8px 22px rgba(0,0,0,0.06);--radius:14px;--sidebar:#ffffff;--danger:#ef4444;}
     *{box-sizing:border-box;}
-    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
-    a{color:inherit;text-decoration:none;}
-    .app{display:flex;min-height:100vh;}
-    .sidebar{
-      width:260px;background:#fff;border-right:1px solid var(--border);
-      padding:18px 14px;position:sticky;top:0;height:100vh;
-    }
-    .brand{display:flex;align-items:center;gap:10px;font-weight:900;font-size:20px;padding:6px 10px;margin-bottom:14px;}
-    .nav{display:flex;flex-direction:column;gap:6px;margin-top:10px;}
-    .nav a{
-      display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;
-      color:var(--text);font-weight:800;
-    }
-    .nav a:hover{background:#f3f4f6;}
-    .nav a.active{background:var(--primary);color:#fff;}
-    .ico{width:18px;height:18px;display:inline-block}
-    .main{flex:1;display:flex;flex-direction:column;}
-    .topbar{
-      height:60px;background:#fff;border-bottom:1px solid var(--border);
-      display:flex;align-items:center;justify-content:flex-end;padding:0 18px;gap:14px;
-      position:sticky;top:0;z-index:5;
-    }
-    .logout{
-      display:inline-flex;align-items:center;gap:8px;font-weight:900;color:#0f172a;
-      padding:8px 10px;border-radius:10px;
-    }
-    .logout:hover{background:#f3f4f6;}
-    .container{padding:22px 22px 28px;}
-    .back{
-      display:inline-flex;align-items:center;gap:10px;color:#0f172a;
-      font-weight:900;margin-bottom:8px;
-    }
-    .back:hover{opacity:0.85;}
-    .page-title{font-size:34px;font-weight:950;letter-spacing:-0.8px;margin:0 0 14px;}
-    .grid{
-      display:grid;grid-template-columns: 1fr 380px;gap:18px;align-items:start;
-    }
-    .card{
-      background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
-      box-shadow:var(--shadow);padding:16px;
-    }
-    .form-grid{
-      display:grid;grid-template-columns:1fr 1fr;gap:14px;
-    }
-    .field label{display:block;font-weight:900;font-size:13px;margin:0 0 8px;}
-    select,input{
-      width:100%;padding:12px 12px;border:1px solid var(--border);border-radius:12px;outline:none;
-      background:#fff;font-weight:800;font-size:14px;
-    }
-    select:focus,input:focus{border-color:var(--primary);}
-    .full{grid-column:1 / -1;}
-    .courses-title{font-weight:950;margin:2px 0 10px;font-size:14px;}
-    .course-item{
-      border:1px solid var(--border);border-radius:12px;padding:12px 12px;
-      display:flex;gap:12px;align-items:center;background:#fff;margin-bottom:10px;
-    }
-    .course-item:hover{background:#fafbff;}
-    .course-item input{width:18px;height:18px;}
-    .course-main{display:flex;flex-direction:column;gap:4px;}
-    .course-name{font-weight:950;}
-    .course-sub{color:var(--muted);font-weight:800;font-size:13px;}
-    .actions{
-      display:flex;gap:12px;margin-top:12px;
-    }
-    .btn{
-      display:inline-flex;align-items:center;justify-content:center;
-      padding:12px 14px;border-radius:12px;border:1px solid var(--border);
-      background:#fff;font-weight:950;cursor:pointer;min-width:160px;
-    }
+    body{margin:0;font-family:Arial,sans-serif;background:var(--bg);color:var(--text);}
+    .layout{display:flex;min-height:100vh;}
+    .sidebar{width:260px;background:var(--sidebar);border-right:1px solid var(--border);padding:18px 14px;}
+    .brand{font-weight:900;letter-spacing:.4px;font-size:18px;padding:10px 10px 16px;}
+    .nav{display:flex;flex-direction:column;gap:6px;margin-top:6px;}
+    .nav a{display:flex;align-items:center;gap:12px;padding:12px 12px;border-radius:12px;color:var(--text);text-decoration:none;font-weight:700;opacity:.92;}
+    .nav a:hover{background:rgba(47,60,255,0.07);opacity:1;}
+    .nav a.active{background:var(--primary);color:#fff;box-shadow:0 10px 18px rgba(47,60,255,0.18);}
+    .nav svg{width:18px;height:18px;flex:0 0 auto;}
+    .nav a.active svg path,.nav a.active svg rect,.nav a.active svg circle{stroke:#fff;}
+    .content{flex:1;display:flex;flex-direction:column;min-width:0;}
+    .topbar{height:64px;background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 18px;}
+    .logout{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);font-weight:800;padding:10px 12px;border-radius:12px;border:1px solid var(--border);background:#fff;}
+    .page{padding:22px 22px 36px;max-width:1200px;width:100%;}
+    .back{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);font-weight:900;margin:0 0 10px;}
+    h1{margin:6px 0 14px;font-size:34px;letter-spacing:-0.6px;}
+    .wrap{display:grid;grid-template-columns: 1fr 360px;gap:18px;align-items:start;}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow2);padding:18px;}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+    label{display:block;font-weight:900;font-size:13px;margin:0 0 6px;}
+    input,select{width:100%;padding:12px;border:1px solid #d0d4e3;border-radius:10px;outline:none;background:#fff;font-weight:800;}
+    input:focus,select:focus{border-color:var(--primary);}
+    .actions{display:flex;gap:12px;margin-top:16px;}
+    .btn{display:inline-flex;align-items:center;justify-content:center;padding:12px 16px;border-radius:12px;border:1px solid var(--border);background:#fff;color:var(--text);text-decoration:none;font-weight:900;cursor:pointer;min-width:150px;}
     .btn-primary{background:var(--primary);border-color:var(--primary);color:#fff;}
-    .btn-primary:hover{filter:brightness(0.97);}
-    .btn-ghost{background:#f3f4f6;}
-    .msg-err{margin-bottom:12px;padding:12px 14px;border-radius:12px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;font-weight:900;white-space:pre-wrap;}
-    .summary-title{font-size:22px;font-weight:950;margin:0 0 14px;}
-    .summary-row{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid #eef2f7;}
-    .summary-row:last-child{border-bottom:none;}
-    .summary-label{color:var(--muted);font-weight:900;}
-    .summary-val{font-weight:950;}
-    .summary-val.good{color:var(--good);}
-    .progress-wrap{margin-top:14px;}
-    .progress-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+    .alert-ok{margin-bottom:12px;padding:10px 12px;border-radius:10px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;font-weight:900;font-size:14px;}
+    .alert-err{margin-bottom:12px;padding:10px 12px;border-radius:10px;background:#ffe8e8;border:1px solid #ffb3b3;color:#8a0000;font-weight:900;font-size:14px;white-space:pre-wrap;}
+    .courses{margin-top:6px;border:1px solid var(--border);border-radius:12px;padding:12px;max-height:280px;overflow:auto;background:#fff;}
+    .course-item{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px;border-radius:10px;}
+    .course-item:hover{background:#f7f8ff;}
+    .course-left{display:flex;gap:10px;align-items:flex-start;}
+    .course-left input{width:auto;margin-top:3px;}
+    .course-title{font-weight:900;}
+    .course-sub{color:var(--muted);font-weight:800;font-size:13px;margin-top:2px;}
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(47,60,255,0.10);color:var(--primary);font-weight:900;font-size:12px;white-space:nowrap;}
+    .sum-row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-top:1px solid var(--border);font-weight:900;}
+    .sum-row:first-of-type{border-top:0;}
     .bar{height:10px;border-radius:999px;background:#e5e7eb;overflow:hidden;}
-    .fill{height:100%;width:0%;background:var(--primary);border-radius:999px;}
-    @media (max-width: 1050px){
-      .grid{grid-template-columns:1fr;}
-    }
-    @media (max-width: 760px){
-      .form-grid{grid-template-columns:1fr;}
-      .btn{min-width:0;flex:1;}
-      .actions{flex-wrap:wrap;}
-    }
+    .bar > div{height:100%;background:var(--primary);width:0%;}
+    @media(max-width:980px){.sidebar{display:none;}.wrap{grid-template-columns:1fr;}}
   </style>
 </head>
 <body>
-<div class="app">
+<div class="layout">
   <aside class="sidebar">
     <div class="brand">UMS</div>
     <nav class="nav">
       <a href="../index.php">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 13h8V3H3v10zM13 21h8V11h-8v10zM13 3h8v6h-8V3zM3 21h8v-6H3v6z"/>
+        <svg viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
+          <rect x="14" y="3" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
+          <rect x="3" y="14" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
+          <rect x="14" y="14" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
         </svg>
         Dashboard
       </a>
-      <a href="../students/list.php">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-          <circle cx="12" cy="7" r="4"/>
+      <a href="../student/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="9" cy="7" r="4" stroke="#0f172a" stroke-width="2"/>
+          <path d="M17 11c2.2 0 4 1.8 4 4v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M1 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
         </svg>
         Students
       </a>
-      <a href="../teachers/list.php">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 21v-2a4 4 0 0 0-3-3.87"/>
-          <path d="M4 21v-2a4 4 0 0 1 3-3.87"/>
-          <circle cx="12" cy="7" r="4"/>
-          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-          <path d="M8 3.13a4 4 0 0 0 0 7.75"/>
+      <a href="../teacher/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="7" r="4" stroke="#0f172a" stroke-width="2"/>
+          <path d="M4 21v-2a8 8 0 0 1 16 0v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
         </svg>
         Teachers
       </a>
-      <a href="../departments/list.php">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 22h18"/>
-          <path d="M7 22V8"/>
-          <path d="M17 22V8"/>
-          <path d="M12 2l9 6H3l9-6z"/>
+      <a href="../department/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M4 21V8l8-5 8 5v13" stroke="#0f172a" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M9 21v-6h6v6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
         </svg>
         Departments
       </a>
-      <a href="../courses/list.php">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20"/>
-          <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20"/>
-          <path d="M6.5 2v20"/>
+      <a href="../course/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M4 4v15.5" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M20 22V6a2 2 0 0 0-2-2H6.5A2.5 2.5 0 0 0 4 6.5" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
         </svg>
         Courses
       </a>
       <a class="active" href="list.php">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="4" width="18" height="18" rx="2"/>
-          <path d="M7 8h10"/>
-          <path d="M7 12h10"/>
-          <path d="M7 16h10"/>
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M8 6h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M8 12h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M8 18h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M3 6h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
+          <path d="M3 12h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
+          <path d="M3 18h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
         </svg>
         Enrollments
       </a>
-      <a href="../results/list.php">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M9 11l3 3L22 4"/>
-          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+      <a href="../result/list.php">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M7 3h10a2 2 0 0 1 2 2v16l-2-1-2 1-2-1-2 1-2-1-2 1V5a2 2 0 0 1 2-2Z" stroke="#0f172a" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M9 8h6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M9 12h6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
         </svg>
         Results
       </a>
     </nav>
   </aside>
 
-  <main class="main">
+  <main class="content">
     <div class="topbar">
-      <a class="logout" href="../logout.php" title="Logout">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-          <path d="M16 17l5-5-5-5"/>
-          <path d="M21 12H9"/>
-        </svg>
-        Logout
-      </a>
+      <div style="font-weight:900;"><?php echo h($_SESSION["name"] ?? "User"); ?></div>
+      <a class="logout" href="../logout.php">Logout</a>
     </div>
 
-    <div class="container">
-      <a class="back" href="list.php">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M15 18l-6-6 6-6"/>
-        </svg>
-        Back to Enrollments
-      </a>
-      <h1 class="page-title">Enroll Student in Courses</h1>
+    <div class="page">
+      <a class="back" href="list.php">← Back to Enrollments</a>
+      <h1>Enroll Student in Courses</h1>
 
-      <?php if ($error !== ""): ?>
-        <div class="msg-err"><?php echo h($error); ?></div>
+      <?php if ($okMsg !== ""): ?>
+        <div class="alert-ok"><?php echo h($okMsg); ?></div>
+      <?php endif; ?>
+      <?php if ($errorMsg !== ""): ?>
+        <div class="alert-err"><?php echo h($errorMsg); ?></div>
       <?php endif; ?>
 
-      <div class="grid">
+      <div class="wrap">
         <div class="card">
           <form method="post" action="">
             <input type="hidden" name="csrf_token" value="<?php echo h($_SESSION["csrf_token"]); ?>">
 
-            <div class="form-grid">
-              <div class="field">
-                <label for="student_id">Student ID *</label>
-                <select id="student_id" name="student_id" required>
+            <div class="grid">
+              <div>
+                <label>Student ID *</label>
+                <select name="student_id" required>
                   <option value="">Select Student</option>
                   <?php foreach ($students as $s): ?>
                     <?php $sid = (int)($s["student_id"] ?? 0); ?>
-                    <option value="<?php echo $sid; ?>" <?php echo $selectedStudentId === $sid ? "selected" : ""; ?>>
-                      <?php echo h(((string)($s["student_id"] ?? "")) . " - " . ((string)($s["name"] ?? ""))); ?>
+                    <option value="<?php echo $sid; ?>" <?php echo ((string)$values["student_id"] === (string)$sid) ? "selected" : ""; ?>>
+                      <?php echo h($sid . " - " . ($s["student_name"] ?? "")); ?>
                     </option>
                   <?php endforeach; ?>
                 </select>
               </div>
 
-              <div class="field">
-                <label for="semester">Semester *</label>
-                <select id="semester" name="semester" required>
+              <div>
+                <label>Semester *</label>
+                <select name="semester" required>
                   <option value="">Select Semester</option>
-                  <?php
-                    $opts = ["Spring","Summer","Fall"];
-                    foreach ($opts as $opt):
-                  ?>
-                    <option value="<?php echo h($opt); ?>" <?php echo $selectedSemester === $opt ? "selected" : ""; ?>>
+                  <?php foreach ($semesterOptions as $opt): ?>
+                    <option value="<?php echo h($opt); ?>" <?php echo ($values["semester"] === $opt) ? "selected" : ""; ?>>
                       <?php echo h($opt); ?>
                     </option>
                   <?php endforeach; ?>
                 </select>
               </div>
 
-              <div class="field">
-                <label for="year">Year *</label>
-                <input id="year" name="year" type="number" placeholder="e.g., 2025" value="<?php echo $selectedYear > 0 ? h($selectedYear) : ""; ?>" required>
+              <div>
+                <label>Year *</label>
+                <input type="number" name="year" placeholder="e.g., 2025" value="<?php echo h($values["year"]); ?>" required />
               </div>
 
-              <div class="field"></div>
+              <div></div>
 
-              <div class="full">
-                <div class="courses-title">Select Courses *</div>
+              <div style="grid-column: 1 / -1;">
+                <label>Select Courses *</label>
 
-                <?php foreach ($courses as $c): ?>
-                  <?php
-                    $cid = (int)($c["course_id"] ?? 0);
-                    $cname = (string)($c["course_name"] ?? "");
-                    $cr = (float)($c["credit_hours"] ?? 0);
-                    $day = (string)($c["schedule_day"] ?? "");
-                    $st = fmtTime($c["start_time"] ?? null);
-                    $et = fmtTime($c["end_time"] ?? null);
-                    $sched = trim($day . " " . (($st !== "" && $et !== "") ? ($st . "-" . $et) : ""));
-                    $checked = in_array($cid, array_map("intval", $selectedCourseIds), true);
-                  ?>
-                  <label class="course-item">
-                    <input
-                      type="checkbox"
-                      name="course_ids[]"
-                      value="<?php echo $cid; ?>"
-                      data-credits="<?php echo h($cr); ?>"
-                      <?php echo $checked ? "checked" : ""; ?>
-                    />
-                    <div class="course-main">
-                      <div class="course-name"><?php echo h($cid . " - " . $cname); ?> <span class="course-sub">(<?php echo h($cr); ?> credits)</span></div>
-                      <div class="course-sub"><?php echo h($sched !== "" ? $sched : "Schedule: -"); ?></div>
-                    </div>
-                  </label>
-                <?php endforeach; ?>
-
-                <div class="actions">
-                  <button class="btn btn-primary" type="submit">Enroll Student</button>
-                  <a class="btn btn-ghost" href="list.php">Cancel</a>
+                <div class="courses" id="courseBox">
+                  <?php if (count($courses) === 0): ?>
+                    <div style="color:#64748b;font-weight:900;">No courses found.</div>
+                  <?php else: ?>
+                    <?php foreach ($courses as $c): ?>
+                      <?php
+                        $cid = (int)($c["course_id"] ?? 0);
+                        $cname = (string)($c["course_name"] ?? "");
+                        $ccode = (string)($c["course_code"] ?? "");
+                        $cr = (int)($c["credit_hours"] ?? 0);
+                        $checked = in_array((string)$cid, array_map("strval", $values["course_ids"]), true);
+                      ?>
+                      <div class="course-item">
+                        <div class="course-left">
+                          <input
+                            class="courseCheck"
+                            type="checkbox"
+                            name="course_ids[]"
+                            value="<?php echo $cid; ?>"
+                            data-credits="<?php echo $cr; ?>"
+                            <?php echo $checked ? "checked" : ""; ?>
+                          />
+                          <div>
+                            <div class="course-title">
+                              <?php echo h(($ccode !== "" ? ($ccode . " - ") : "") . $cname); ?>
+                            </div>
+                            <div class="course-sub"><?php echo h("Credits: " . $cr); ?></div>
+                          </div>
+                        </div>
+                        <span class="pill"><?php echo h($cr . " cr"); ?></span>
+                      </div>
+                    <?php endforeach; ?>
+                  <?php endif; ?>
                 </div>
+
               </div>
+            </div>
+
+            <div class="actions">
+              <button class="btn btn-primary" type="submit">Enroll Student</button>
+              <a class="btn" href="list.php">Cancel</a>
             </div>
           </form>
         </div>
 
         <div class="card">
-          <div class="summary-title">Credit Summary</div>
+          <div style="font-weight:950;font-size:22px;margin:0 0 10px;">Credit Summary</div>
 
-          <div class="summary-row">
-            <div class="summary-label">Current Credits</div>
-            <div class="summary-val" id="curCredits"><?php echo h(number_format($uiCurrentCredits, 0)); ?></div>
+          <div class="sum-row">
+            <div style="color:var(--muted);font-weight:900;">Current Credits</div>
+            <div id="curCredits" style="font-weight:950;">0</div>
           </div>
 
-          <div class="summary-row">
-            <div class="summary-label">Maximum Credits</div>
-            <div class="summary-val" id="maxCredits"><?php echo h((string)$MAX_CREDITS); ?></div>
+          <div class="sum-row">
+            <div style="color:var(--muted);font-weight:900;">Maximum Credits</div>
+            <div style="font-weight:950;"><?php echo (int)$MAX_CREDITS; ?></div>
           </div>
 
-          <div class="summary-row">
-            <div class="summary-label">Remaining</div>
-            <div class="summary-val good" id="remainCredits"><?php echo h(number_format(max(0, $MAX_CREDITS - $uiCurrentCredits), 0)); ?></div>
+          <div class="sum-row">
+            <div style="color:var(--muted);font-weight:900;">Remaining</div>
+            <div id="remCredits" style="font-weight:950;color:#16a34a;"><?php echo (int)$MAX_CREDITS; ?></div>
           </div>
 
-          <div class="progress-wrap">
-            <div class="progress-head">
-              <div class="summary-label">Credit Usage</div>
-              <div class="summary-val" id="usagePct">0%</div>
+          <div class="sum-row" style="align-items:flex-start;flex-direction:column;gap:10px;">
+            <div style="width:100%;display:flex;justify-content:space-between;align-items:center;">
+              <div style="color:var(--muted);font-weight:900;">Credit Usage</div>
+              <div id="usagePct" style="font-weight:950;">0%</div>
             </div>
-            <div class="bar"><div class="fill" id="usageFill"></div></div>
+            <div class="bar" style="width:100%;">
+              <div id="usageBar"></div>
+            </div>
+          </div>
+
+          <div id="warnBox" class="alert-err" style="display:none;margin-top:12px;">
+            Selected credits exceed maximum.
           </div>
         </div>
       </div>
@@ -608,41 +429,40 @@ if ($selectedStudentId > 0 && $selectedSemester !== "" && $selectedYear > 0) {
 
 <script>
 (function(){
-  const maxCredits = parseFloat(document.getElementById('maxCredits').textContent || '0') || 0;
-  const baseCredits = parseFloat(document.getElementById('curCredits').textContent || '0') || 0;
+  const MAX = <?php echo (int)$MAX_CREDITS; ?>;
+  const checks = Array.from(document.querySelectorAll(".courseCheck"));
+  const cur = document.getElementById("curCredits");
+  const rem = document.getElementById("remCredits");
+  const pct = document.getElementById("usagePct");
+  const bar = document.getElementById("usageBar");
+  const warn = document.getElementById("warnBox");
 
-  const remainEl = document.getElementById('remainCredits');
-  const usageEl = document.getElementById('usagePct');
-  const fillEl = document.getElementById('usageFill');
-
-  function calcSelectedCredits(){
-    let sum = 0;
-    document.querySelectorAll('input[type="checkbox"][name="course_ids[]"]').forEach(cb => {
-      if(cb.checked){
-        sum += parseFloat(cb.getAttribute('data-credits') || '0') || 0;
-      }
+  function calc(){
+    let total = 0;
+    checks.forEach(ch => {
+      if (ch.checked) total += parseInt(ch.getAttribute("data-credits") || "0", 10);
     });
-    return sum;
+
+    cur.textContent = total;
+    const remaining = MAX - total;
+    rem.textContent = remaining;
+    rem.style.color = remaining < 0 ? "#dc2626" : "#16a34a";
+
+    const usage = MAX === 0 ? 0 : Math.round((total / MAX) * 100);
+    pct.textContent = usage + "%";
+    bar.style.width = Math.max(0, Math.min(100, usage)) + "%";
+
+    if (total > MAX){
+      warn.style.display = "block";
+    } else {
+      warn.style.display = "none";
+    }
   }
 
-  function render(){
-    const selected = calcSelectedCredits();
-    const total = baseCredits + selected;
-    const remaining = Math.max(0, maxCredits - total);
-
-    remainEl.textContent = String(Math.round(remaining));
-
-    const pct = maxCredits > 0 ? Math.min(100, Math.round((total / maxCredits) * 100)) : 0;
-    usageEl.textContent = pct + "%";
-    fillEl.style.width = pct + "%";
-  }
-
-  document.querySelectorAll('input[type="checkbox"][name="course_ids[]"]').forEach(cb => {
-    cb.addEventListener('change', render);
-  });
-
-  render();
+  checks.forEach(ch => ch.addEventListener("change", calc));
+  calc();
 })();
 </script>
+
 </body>
 </html>
