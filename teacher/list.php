@@ -1,13 +1,13 @@
 <?php
 session_start();
 require_once __DIR__ . "/../db.php";
-// Cache prevention
+require_once __DIR__ . "/../partials/layout.php";
+
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
 header("Pragma: no-cache");
 header("Expires: 0");
 
-// Auth guard
 if (!isset($_SESSION["user_id"])) {
     header("Location: ../login.php");
     exit();
@@ -20,17 +20,48 @@ function colExists($conn, $table, $column) {
     return isset($row["len"]) && $row["len"] !== null;
 }
 
+function h($v) {
+    return htmlspecialchars((string)($v ?? ""), ENT_QUOTES, "UTF-8");
+}
+
 $hasEmail = colExists($conn, "dbo.TEACHER", "email") || colExists($conn, "TEACHER", "email");
 $hasPhone = colExists($conn, "dbo.TEACHER", "phone") || colExists($conn, "TEACHER", "phone");
 $hasDesignation = colExists($conn, "dbo.TEACHER", "designation") || colExists($conn, "TEACHER", "designation");
 $hasTeacherCode = colExists($conn, "dbo.TEACHER", "teacher_code") || colExists($conn, "TEACHER", "teacher_code");
 
 $search = trim($_GET["q"] ?? "");
+$deptFilter = trim($_GET["dept_id"] ?? "");
+$designationFilter = trim($_GET["designation"] ?? "");
 $page = (int)($_GET["page"] ?? 1);
 if ($page < 1) $page = 1;
 
 $perPage = 5;
 $offset = ($page - 1) * $perPage;
+
+/* department options */
+$departments = [];
+$deptStmt = sqlsrv_query($conn, "SELECT dept_id, name FROM DEPARTMENT ORDER BY name ASC");
+if ($deptStmt) {
+    while ($d = sqlsrv_fetch_array($deptStmt, SQLSRV_FETCH_ASSOC)) {
+        $departments[] = $d;
+    }
+}
+
+/* designation options */
+$designationOptions = [];
+if ($hasDesignation) {
+    $desStmt = sqlsrv_query($conn, "
+        SELECT DISTINCT designation
+        FROM TEACHER
+        WHERE designation IS NOT NULL AND LTRIM(RTRIM(designation)) <> ''
+        ORDER BY designation ASC
+    ");
+    if ($desStmt) {
+        while ($d = sqlsrv_fetch_array($desStmt, SQLSRV_FETCH_ASSOC)) {
+            $designationOptions[] = (string)$d["designation"];
+        }
+    }
+}
 
 $where = "1=1";
 $params = [];
@@ -50,6 +81,16 @@ if ($search !== "") {
     }
 
     $where .= ")";
+}
+
+if ($deptFilter !== "") {
+    $where .= " AND t.dept_id = ? ";
+    $params[] = (int)$deptFilter;
+}
+
+if ($designationFilter !== "" && $hasDesignation) {
+    $where .= " AND t.designation = ? ";
+    $params[] = $designationFilter;
 }
 
 $countSql = "
@@ -99,14 +140,11 @@ function teacherLabel($row, $hasTeacherCode) {
     return "T" . str_pad((string)$id, 3, "0", STR_PAD_LEFT);
 }
 
-function fmtDate($d) {
-    if ($d instanceof DateTime) return $d->format("Y-m-d");
-    return "";
-}
-
-function pageUrl($p, $q) {
+function pageUrl($p, $q, $deptId, $designation) {
     $qs = [];
     if ($q !== "") $qs["q"] = $q;
+    if ($deptId !== "") $qs["dept_id"] = $deptId;
+    if ($designation !== "") $qs["designation"] = $designation;
     $qs["page"] = $p;
     return "list.php?" . http_build_query($qs);
 }
@@ -119,179 +157,15 @@ $name = $_SESSION["name"] ?? "User";
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Teachers</title>
-  <style>
-    :root{
-      --bg:#f4f6fb;
-      --card:#ffffff;
-      --text:#0f172a;
-      --muted:#64748b;
-      --primary:#2f3cff;
-      --border:#e5e7eb;
-      --shadow2:0 8px 22px rgba(0,0,0,0.06);
-      --radius:14px;
-      --sidebar:#ffffff;
-      --danger:#ef4444;
-    }
-    *{ box-sizing:border-box; }
-    body{ margin:0; font-family: Arial, sans-serif; background:var(--bg); color:var(--text); }
-    .layout{ display:flex; min-height:100vh; }
-    .sidebar{
-      width:260px; background:var(--sidebar); border-right:1px solid var(--border);
-      padding:18px 14px;
-    }
-    .brand{ font-weight:900; letter-spacing:.4px; font-size:18px; padding:10px 10px 16px; }
-    .nav{ display:flex; flex-direction:column; gap:6px; margin-top:6px; }
-    .nav a{
-      display:flex; align-items:center; gap:12px; padding:12px 12px; border-radius:12px;
-      color:var(--text); text-decoration:none; font-weight:700; opacity:.92;
-    }
-    .nav a:hover{ background:rgba(47,60,255,0.07); opacity:1; }
-    .nav a.active{ background:var(--primary); color:#fff; box-shadow:0 10px 18px rgba(47,60,255,0.18); }
-    .nav svg{ width:18px; height:18px; flex:0 0 auto; }
-    .nav a.active svg path, .nav a.active svg rect, .nav a.active svg circle{ stroke:#fff; }
-
-    .content{ flex:1; display:flex; flex-direction:column; min-width:0; }
-    .topbar{
-      height:64px; background:var(--card); border-bottom:1px solid var(--border);
-      display:flex; align-items:center; justify-content:space-between; padding:0 18px;
-    }
-    .logout{
-      display:inline-flex; align-items:center; gap:10px; text-decoration:none; color:var(--text);
-      font-weight:800; padding:10px 12px; border-radius:12px; border:1px solid var(--border); background:#fff;
-    }
-
-    .page{ padding:22px 22px 36px; max-width:1200px; width:100%; }
-    .header{
-      display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;
-      margin: 8px 0 14px;
-    }
-    h1{ margin:0; font-size:34px; letter-spacing:-0.6px; }
-    .btn{
-      display:inline-flex; align-items:center; gap:10px; padding:12px 16px; border-radius:12px;
-      border:1px solid var(--border); background:#fff; color:var(--text); text-decoration:none; font-weight:900;
-    }
-    .btn-primary{ background:var(--primary); border-color:var(--primary); color:#fff; }
-    .card{
-      background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
-      box-shadow:var(--shadow2); padding:16px;
-    }
-    .search{
-      display:flex; align-items:center; gap:10px; border:1px solid #d0d4e3; background:#fff;
-      border-radius:12px; padding:10px 12px; margin-bottom:12px;
-    }
-    .search input{ border:0; outline:0; width:100%; font-size:14px; }
-    table{ width:100%; border-collapse:collapse; }
-    thead th{
-      text-align:left; font-size:13px; color:var(--muted); padding:12px 10px; border-bottom:1px solid var(--border);
-      font-weight:900;
-    }
-    tbody td{
-      padding:14px 10px; border-bottom:1px solid #f0f2f7; font-weight:800;
-      vertical-align:top;
-    }
-    .actions{ display:flex; gap:12px; justify-content:flex-end; }
-    .icon-btn{
-      width:34px; height:34px; border-radius:10px; border:1px solid var(--border);
-      display:inline-flex; align-items:center; justify-content:center; background:#fff; text-decoration:none;
-    }
-    .icon-btn:hover{ transform: translateY(-1px); }
-    .icon-edit svg{ stroke: var(--primary); }
-    .icon-del svg{ stroke: var(--danger); }
-
-    .footer{
-      display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; padding-top:12px;
-    }
-    .pager{ display:flex; gap:8px; align-items:center; }
-    .pager a{
-      text-decoration:none; font-weight:900; padding:10px 12px; border-radius:10px; border:1px solid var(--border);
-      background:#fff; color:var(--text);
-    }
-    .pager a.active{ background:var(--primary); border-color:var(--primary); color:#fff; }
-    .muted{ color:var(--muted); font-weight:800; font-size:13px; }
-
-    @media (max-width: 860px){
-      .sidebar{ display:none; }
-    }
-  </style>
+  <link rel="stylesheet" href="../assets/app.css">
 </head>
 <body>
 <div class="layout">
 
-  <aside class="sidebar">
-    <div class="brand">UMS</div>
-    <nav class="nav">
-      <a href="../index.php">
-        <svg viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
-          <rect x="14" y="3" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
-          <rect x="3" y="14" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
-          <rect x="14" y="14" width="7" height="7" rx="2" stroke="#0f172a" stroke-width="2"/>
-        </svg>
-        Dashboard
-      </a>
-
-      <a href="../student/list.php">
-        <svg viewBox="0 0 24 24" fill="none">
-          <circle cx="9" cy="7" r="4" stroke="#0f172a" stroke-width="2"/>
-          <path d="M17 11c2.2 0 4 1.8 4 4v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-          <path d="M1 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-        Students
-      </a>
-
-      <a class="active" href="list.php">
-        <svg viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="7" r="4" stroke="#0f172a" stroke-width="2"/>
-          <path d="M4 21v-2a8 8 0 0 1 16 0v2" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-        Teachers
-      </a>
-
-      <a href="../department/list.php">
-        <svg viewBox="0 0 24 24" fill="none">
-          <path d="M4 21V8l8-5 8 5v13" stroke="#0f172a" stroke-width="2" stroke-linejoin="round"/>
-          <path d="M9 21v-6h6v6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-        Departments
-      </a>
-
-      <a href="../course/list.php">
-        <svg viewBox="0 0 24 24" fill="none">
-          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-          <path d="M4 4v15.5" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-          <path d="M20 22V6a2 2 0 0 0-2-2H6.5A2.5 2.5 0 0 0 4 6.5" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-        Courses
-      </a>
-
-      <a href="../enrollment/list.php">
-        <svg viewBox="0 0 24 24" fill="none">
-          <path d="M8 6h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-          <path d="M8 12h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-          <path d="M8 18h13" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-          <path d="M3 6h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
-          <path d="M3 12h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
-          <path d="M3 18h.01" stroke="#0f172a" stroke-width="3" stroke-linecap="round"/>
-        </svg>
-        Enrollments
-      </a>
-
-      <a href="../result/list.php">
-        <svg viewBox="0 0 24 24" fill="none">
-          <path d="M7 3h10a2 2 0 0 1 2 2v16l-2-1-2 1-2-1-2 1-2-1-2 1V5a2 2 0 0 1 2-2Z" stroke="#0f172a" stroke-width="2" stroke-linejoin="round"/>
-          <path d="M9 8h6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-          <path d="M9 12h6" stroke="#0f172a" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-        Results
-      </a>
-    </nav>
-  </aside>
+  <?php renderSidebar("teachers", "../"); ?>
 
   <main class="content">
-    <div class="topbar">
-      <div style="font-weight:900;"><?php echo htmlspecialchars($name); ?></div>
-      <a class="logout" href="../logout.php">Logout</a>
-    </div>
+    <?php renderTopbar($name, "", "../logout.php", false); ?>
 
     <div class="page">
       <div class="header">
@@ -303,12 +177,46 @@ $name = $_SESSION["name"] ?? "User";
       </div>
 
       <div class="card">
-        <form class="search" method="get" action="">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" stroke="#64748b" stroke-width="2"/>
-            <path d="M20 20l-3.5-3.5" stroke="#64748b" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-          <input type="text" name="q" value="<?php echo htmlspecialchars($search); ?>" placeholder="Search teachers..." />
+        <form method="get" action="list.php" class="toolbar">
+          <div class="search" style="flex:1;min-width:260px;margin-bottom:0;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" stroke="#64748b" stroke-width="2"/>
+              <path d="M20 20l-3.5-3.5" stroke="#64748b" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <input
+              type="text"
+              name="q"
+              value="<?php echo h($search); ?>"
+              placeholder="Search teachers..."
+            />
+          </div>
+
+          <select name="dept_id" aria-label="Filter by department">
+            <option value="">All Departments</option>
+            <?php foreach ($departments as $d): ?>
+              <option
+                value="<?php echo (int)$d["dept_id"]; ?>"
+                <?php echo ((string)$deptFilter === (string)$d["dept_id"]) ? "selected" : ""; ?>
+              >
+                <?php echo h($d["name"]); ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+
+          <select name="designation" aria-label="Filter by designation">
+            <option value="">All Designations</option>
+            <?php foreach ($designationOptions as $designation): ?>
+              <option
+                value="<?php echo h($designation); ?>"
+                <?php echo ((string)$designationFilter === (string)$designation) ? "selected" : ""; ?>
+              >
+                <?php echo h($designation); ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+
+          <button class="btn btn-primary" type="submit">Filter</button>
+          <a class="btn" href="list.php">Reset</a>
         </form>
 
         <table>
@@ -334,11 +242,11 @@ $name = $_SESSION["name"] ?? "User";
                   $designation = $hasDesignation ? (string)($t["designation"] ?? "") : "";
                 ?>
                 <tr>
-                  <td><?php echo htmlspecialchars($tid); ?></td>
-                  <td><?php echo htmlspecialchars((string)$t["name"]); ?></td>
-                  <td><?php echo htmlspecialchars($email !== "" ? $email : "-"); ?></td>
-                  <td><?php echo htmlspecialchars((string)$t["dept_name"]); ?></td>
-                  <td><?php echo htmlspecialchars($designation !== "" ? $designation : "-"); ?></td>
+                  <td><?php echo h($tid); ?></td>
+                  <td><?php echo h($t["name"]); ?></td>
+                  <td><?php echo h($email !== "" ? $email : "-"); ?></td>
+                  <td><?php echo h($t["dept_name"]); ?></td>
+                  <td><?php echo h($designation !== "" ? $designation : "-"); ?></td>
                   <td style="text-align:right;">
                     <div class="actions">
                       <a class="icon-btn icon-edit" href="edit.php?teacher_id=<?php echo $id; ?>" title="Edit">
@@ -372,15 +280,20 @@ $name = $_SESSION["name"] ?? "User";
           </div>
 
           <div class="pager">
-            <a href="<?php echo htmlspecialchars(pageUrl(max(1, $page - 1), $search)); ?>">Previous</a>
+            <a href="<?php echo h(pageUrl(max(1, $page - 1), $search, $deptFilter, $designationFilter)); ?>">Previous</a>
             <?php
               $start = max(1, $page - 2);
               $end = min($totalPages, $page + 2);
               for ($p = $start; $p <= $end; $p++):
             ?>
-              <a class="<?php echo $p === $page ? "active" : ""; ?>" href="<?php echo htmlspecialchars(pageUrl($p, $search)); ?>"><?php echo $p; ?></a>
+              <a
+                class="<?php echo $p === $page ? "active" : ""; ?>"
+                href="<?php echo h(pageUrl($p, $search, $deptFilter, $designationFilter)); ?>"
+              >
+                <?php echo $p; ?>
+              </a>
             <?php endfor; ?>
-            <a href="<?php echo htmlspecialchars(pageUrl(min($totalPages, $page + 1), $search)); ?>">Next</a>
+            <a href="<?php echo h(pageUrl(min($totalPages, $page + 1), $search, $deptFilter, $designationFilter)); ?>">Next</a>
           </div>
         </div>
 
