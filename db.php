@@ -1,5 +1,5 @@
 <?php
-$serverName = "DESKTOP-GLIUEAG\\SQLEXPRESS"; 
+$serverName = "DESKTOP-DRIA144\\SQLEXPRESS"; 
 $connectionOptions = [
     "Database" => "university_db",
     "Uid" => "sa",

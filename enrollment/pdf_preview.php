@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . "/../db.php";
+require_once __DIR__ . "/../partials/layout.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -14,6 +15,13 @@ if (!isset($_SESSION["user_id"])) {
 
 function h($v) {
     return htmlspecialchars((string)($v ?? ""), ENT_QUOTES, "UTF-8");
+}
+
+function colExists($conn, $table, $column) {
+    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
+    if ($stmt === false) return false;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    return isset($row["len"]) && $row["len"] !== null;
 }
 
 function buildQuery(array $override = []) {
@@ -31,6 +39,43 @@ $courseTable = "dbo.COURSE";
 $deptTable = "dbo.DEPARTMENT";
 $enrollTable = "dbo.ENROLLMENT";
 
+$studentNameCol = "name";
+if (colExists($conn, $studentTable, "student_name")) $studentNameCol = "student_name";
+if (colExists($conn, $studentTable, "full_name")) $studentNameCol = "full_name";
+
+$deptNameCol = "name";
+if (colExists($conn, $deptTable, "department_name")) $deptNameCol = "department_name";
+if (colExists($conn, $deptTable, "dept_name")) $deptNameCol = "dept_name";
+
+$courseNameCol = "course_name";
+if (colExists($conn, $courseTable, "name")) $courseNameCol = "name";
+if (colExists($conn, $courseTable, "title")) $courseNameCol = "title";
+
+$courseCodeCol = null;
+foreach (["course_code", "code"] as $c) {
+    if (colExists($conn, $courseTable, $c)) {
+        $courseCodeCol = $c;
+        break;
+    }
+}
+
+$creditCol = "credit_hours";
+if (colExists($conn, $courseTable, "credits")) $creditCol = "credits";
+if (colExists($conn, $courseTable, "credit")) $creditCol = "credit";
+
+$hasYear = colExists($conn, $enrollTable, "year");
+$semesterIsNumeric = true;
+$semTypeStmt = sqlsrv_query($conn, "
+    SELECT DATA_TYPE AS type_name
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'ENROLLMENT' AND COLUMN_NAME = 'semester'
+");
+if ($semTypeStmt !== false) {
+    $semTypeRow = sqlsrv_fetch_array($semTypeStmt, SQLSRV_FETCH_ASSOC);
+    $semesterIsNumeric = in_array(strtolower((string)($semTypeRow["type_name"] ?? "")), ["int", "smallint", "tinyint", "bigint"], true);
+    sqlsrv_free_stmt($semTypeStmt);
+}
+
 $q = trim($_GET["q"] ?? "");
 $term = trim($_GET["term"] ?? "");
 $year = trim($_GET["year"] ?? "");
@@ -41,9 +86,9 @@ $where = "1=1";
 
 if ($term !== "") {
     $where .= " AND e.semester = ?";
-    $params[] = $term;
+    $params[] = $semesterIsNumeric ? (int)$term : $term;
 }
-if ($year !== "") {
+if ($year !== "" && $hasYear) {
     $where .= " AND e.year = ?";
     $params[] = (int)$year;
 }
@@ -54,36 +99,36 @@ if ($studentSemester !== "") {
 if ($q !== "") {
     $where .= " AND (
         CONVERT(VARCHAR(50), s.student_id) LIKE ? OR
-        s.name LIKE ? OR
-        d.name LIKE ? OR
-        c.course_code LIKE ? OR
-        c.course_name LIKE ?
+        s.$studentNameCol LIKE ? OR
+        d.$deptNameCol LIKE ? OR
+        " . ($courseCodeCol ? "c.$courseCodeCol LIKE ? OR" : "") . "
+        c.$courseNameCol LIKE ?
     )";
     $like = "%" . $q . "%";
     $params[] = $like;
     $params[] = $like;
     $params[] = $like;
-    $params[] = $like;
+    if ($courseCodeCol) $params[] = $like;
     $params[] = $like;
 }
 
 $sql = "
     SELECT
       s.student_id,
-      s.name AS student_name,
-      d.name AS department_name,
-      c.course_code,
-      c.course_name,
-      c.credit_hours,
+      s.$studentNameCol AS student_name,
+      d.$deptNameCol AS department_name,
+      " . ($courseCodeCol ? "c.$courseCodeCol" : "CONVERT(VARCHAR(50), c.course_id)") . " AS course_code,
+      c.$courseNameCol AS course_name,
+      c.$creditCol AS credit_hours,
       e.semester AS term,
-      e.year,
+      " . ($hasYear ? "e.year" : "NULL AS year") . ",
       s.semester AS student_semester
     FROM $enrollTable e
     JOIN $studentTable s ON s.student_id = e.student_id
     JOIN $courseTable c ON c.course_id = e.course_id
     LEFT JOIN $deptTable d ON d.dept_id = s.dept_id
     WHERE $where
-    ORDER BY e.year DESC, e.semester DESC, s.name ASC, c.course_name ASC
+    ORDER BY " . ($hasYear ? "e.year DESC," : "") . " e.semester DESC, s.$studentNameCol ASC, c.$courseNameCol ASC
 ";
 
 $stmt = sqlsrv_query($conn, $sql, $params);
@@ -97,6 +142,7 @@ if ($stmt !== false) {
 
 $generatedOn = date("d M Y, h:i A");
 $downloadUrl = "download_pdf.php" . buildQuery();
+$displayName = $_SESSION["name"] ?? "User";
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -171,6 +217,12 @@ $downloadUrl = "download_pdf.php" . buildQuery();
   </style>
 </head>
 <body>
+<div class="layout">
+  <?php renderSidebar("enrollments", "../"); ?>
+
+  <main class="content">
+    <?php renderTopbar($displayName, "", "../logout.php", false); ?>
+
   <div class="preview-wrap">
     <div class="preview-actions">
       <a class="btn" href="list.php<?php echo h(buildQuery()); ?>">← Back to Enrollments</a>
@@ -243,5 +295,7 @@ $downloadUrl = "download_pdf.php" . buildQuery();
       </div>
     </div>
   </div>
+  </main>
+</div>
 </body>
 </html>

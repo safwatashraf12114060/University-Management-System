@@ -30,10 +30,36 @@ function colExists($conn, $table, $column) {
     return isset($row["len"]) && $row["len"] !== null;
 }
 
+function sqlErrorText() {
+    $errs = sqlsrv_errors();
+    if (!$errs) return "Unknown SQL error";
+    $parts = [];
+    foreach ($errs as $e) $parts[] = trim((string)($e["message"] ?? ""));
+    return implode(" | ", $parts);
+}
+
+function fetchOneAssoc($conn, $sql, array $params = []) {
+    $stmt = sqlsrv_query($conn, $sql, $params);
+    if ($stmt === false) return null;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    sqlsrv_free_stmt($stmt);
+    return $row ?: null;
+}
+
+function normalizeGrade($grade) {
+    return strtoupper(trim((string)$grade));
+}
+
+function isPassingGrade($grade) {
+    $grade = normalizeGrade($grade);
+    return $grade !== "" && $grade !== "F";
+}
+
 $studentTable = "dbo.STUDENT";
 $courseTable  = "dbo.COURSE";
 $deptTable    = "dbo.DEPARTMENT";
 $enrollTable  = "dbo.ENROLLMENT";
+$resultTable  = "dbo.RESULT";
 
 $studentNameCol = "name";
 if (colExists($conn, $studentTable, "student_name")) $studentNameCol = "student_name";
@@ -50,8 +76,37 @@ foreach (["course_code", "code"] as $cand) {
 
 $creditCol = "credit_hours";
 if (colExists($conn, $courseTable, "credits")) $creditCol = "credits";
+if (colExists($conn, $courseTable, "credit")) $creditCol = "credit";
 
-$MAX_CREDITS = 18;
+$enrollSemesterCol = colExists($conn, $enrollTable, "semester_name") ? "semester_name" : "semester";
+$hasYear = colExists($conn, $enrollTable, "year");
+$hasEnrollmentDate = colExists($conn, $enrollTable, "enrollment_date");
+$semesterIsNumeric = true;
+$semTypeStmt = sqlsrv_query($conn, "
+    SELECT DATA_TYPE AS type_name
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'ENROLLMENT' AND COLUMN_NAME = ?
+", [$enrollSemesterCol]);
+if ($semTypeStmt !== false) {
+    $semTypeRow = sqlsrv_fetch_array($semTypeStmt, SQLSRV_FETCH_ASSOC);
+    $semesterIsNumeric = in_array(strtolower((string)($semTypeRow["type_name"] ?? "")), ["int", "smallint", "tinyint", "bigint"], true);
+    sqlsrv_free_stmt($semTypeStmt);
+}
+
+$gradeCol = colExists($conn, $resultTable, "grade") ? "grade" : null;
+$gpaCol = colExists($conn, $resultTable, "gpa") ? "gpa" : null;
+$coursePrereqCol = null;
+foreach (["prerequisite_course_id", "prerequisite_id", "prereq_course_id"] as $cand) {
+    if (colExists($conn, $courseTable, $cand)) { $coursePrereqCol = $cand; break; }
+}
+$courseSeatLimitCol = null;
+foreach (["seat_limit", "capacity", "max_students"] as $cand) {
+    if (colExists($conn, $courseTable, $cand)) { $courseSeatLimitCol = $cand; break; }
+}
+
+$MIN_CREDITS = 12;
+$DEFAULT_MAX_CREDITS = 18;
+$currentMaxCredits = $DEFAULT_MAX_CREDITS;
 
 $students = [];
 $studentSql = "
@@ -85,6 +140,69 @@ if ($cs !== false) {
     sqlsrv_free_stmt($cs);
 }
 
+$studentMaxCreditMap = [];
+foreach ($students as $studentRow) {
+    $sid = (int)($studentRow["student_id"] ?? 0);
+    if ($sid <= 0) continue;
+
+    $maxCredits = $DEFAULT_MAX_CREDITS;
+    if ($gpaCol !== null) {
+        $gpaSql = "
+            SELECT AVG(CAST(r.$gpaCol AS float)) AS cgpa
+            FROM $resultTable r
+            WHERE r.$gpaCol IS NOT NULL
+              AND r.enrollment_id IN (
+                  SELECT e.enrollment_id FROM $enrollTable e WHERE e.student_id = ?
+              )";
+        $gpaRow = fetchOneAssoc($conn, $gpaSql, [$sid]);
+        $studentGpa = ($gpaRow && $gpaRow["cgpa"] !== null) ? (float)$gpaRow["cgpa"] : null;
+        if ($studentGpa !== null) {
+            if ($studentGpa < 2.00) $maxCredits = 12;
+            elseif ($studentGpa < 3.00) $maxCredits = 15;
+        }
+    }
+
+    $studentMaxCreditMap[$sid] = $maxCredits;
+}
+
+$existingEnrollmentMap = [];
+$enrollmentLoadSql = "
+    SELECT
+        e.student_id,
+        e.course_id,
+        e.$enrollSemesterCol AS semester_value,"
+        . ($hasYear ? " e.year AS year_value," : " NULL AS year_value,") . "
+        CAST(c.$creditCol AS float) AS credit_hours
+    FROM $enrollTable e
+    JOIN $courseTable c ON c.course_id = e.course_id
+";
+$enrollLoadStmt = sqlsrv_query($conn, $enrollmentLoadSql);
+if ($enrollLoadStmt !== false) {
+    while ($row = sqlsrv_fetch_array($enrollLoadStmt, SQLSRV_FETCH_ASSOC)) {
+        $sid = (int)($row["student_id"] ?? 0);
+        $cid = (int)($row["course_id"] ?? 0);
+        if ($sid <= 0 || $cid <= 0) continue;
+
+        $semesterValueRaw = $row["semester_value"] ?? "";
+        $semesterKeyPart = is_object($semesterValueRaw) && method_exists($semesterValueRaw, "format")
+            ? $semesterValueRaw->format("Y-m-d H:i:s")
+            : trim((string)$semesterValueRaw);
+        $yearKeyPart = trim((string)($row["year_value"] ?? ""));
+        $entryKey = $semesterKeyPart . "|" . $yearKeyPart;
+
+        if (!isset($existingEnrollmentMap[$sid][$entryKey])) {
+            $existingEnrollmentMap[$sid][$entryKey] = [
+                "currentCredits" => 0.0,
+                "courseIds" => []
+            ];
+        }
+
+        $existingEnrollmentMap[$sid][$entryKey]["currentCredits"] += (float)($row["credit_hours"] ?? 0);
+        $existingEnrollmentMap[$sid][$entryKey]["courseIds"][] = $cid;
+    }
+    sqlsrv_free_stmt($enrollLoadStmt);
+}
+
 $errorMsg = "";
 $okMsg = "";
 
@@ -111,6 +229,14 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $studentId = (int)$values["student_id"];
         $year = (int)$values["year"];
 
+        $selectedStudent = null;
+        foreach ($students as $s) {
+            if ((int)($s["student_id"] ?? 0) === $studentId) {
+                $selectedStudent = $s;
+                break;
+            }
+        }
+
         $courseIds = [];
         foreach ($values["course_ids"] as $cid) {
             $cidInt = (int)$cid;
@@ -118,69 +244,205 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         }
         $courseIds = array_values(array_unique($courseIds));
 
+        $semesterValue = $semesterIsNumeric
+            ? (int)($selectedStudent["student_semester"] ?? 0)
+            : $values["term"];
+
         if ($studentId <= 0) {
             $errorMsg = "Student is required.";
-        } elseif ($values["term"] === "") {
-            $errorMsg = "Term is required.";
-        } elseif ($year < 2000 || $year > 2100) {
+        } elseif (!$selectedStudent) {
+            $errorMsg = "Selected student was not found.";
+        } elseif (!$semesterIsNumeric && $values["term"] === "") {
+            $errorMsg = "Semester name is required.";
+        } elseif ($hasYear && ($year < 2000 || $year > 2100)) {
             $errorMsg = "Valid year is required.";
+        } elseif ($semesterIsNumeric && $semesterValue <= 0) {
+            $errorMsg = "Selected student does not have a valid semester.";
         } elseif (count($courseIds) === 0) {
             $errorMsg = "Please select at least one course.";
         } else {
-            $selectedCredits = 0;
-            $courseCreditMap = [];
+            $courseInfoMap = [];
             foreach ($courses as $c) {
                 $cid = (int)($c["course_id"] ?? 0);
-                $cr = (float)($c["credit_hours"] ?? 0);
-                if ($cid > 0) $courseCreditMap[$cid] = $cr;
+                if ($cid > 0) $courseInfoMap[$cid] = $c;
             }
-            foreach ($courseIds as $cid) $selectedCredits += (float)($courseCreditMap[$cid] ?? 0);
 
-            if ($selectedCredits > $MAX_CREDITS) {
-                $errorMsg = "Selected credits exceed maximum ($MAX_CREDITS).";
+            $missingCourse = false;
+            $departmentMismatch = [];
+            $selectedCredits = 0.0;
+            foreach ($courseIds as $cid) {
+                if (!isset($courseInfoMap[$cid])) {
+                    $missingCourse = true;
+                    break;
+                }
+                $courseRow = $courseInfoMap[$cid];
+                $selectedCredits += (float)($courseRow["credit_hours"] ?? 0);
+                if ((int)($courseRow["dept_id"] ?? 0) !== (int)($selectedStudent["dept_id"] ?? 0)) {
+                    $departmentMismatch[] = (string)($courseRow["course_name"] ?? ("Course #" . $cid));
+                }
+            }
+
+            if ($missingCourse) {
+                $errorMsg = "One or more selected courses were not found.";
+            } elseif ($departmentMismatch) {
+                $errorMsg = "Department restriction failed. These courses do not belong to the student's department: " . implode(", ", $departmentMismatch) . ".";
             } else {
-                $insertSql = "
-                    INSERT INTO $enrollTable (student_id, course_id, semester, year, enrollment_date)
-                    VALUES (?, ?, ?, ?, ?)
-                ";
+                $currentCreditSql = "
+                    SELECT ISNULL(SUM(CAST(c.$creditCol AS float)), 0) AS current_credits
+                    FROM $enrollTable e
+                    JOIN $courseTable c ON c.course_id = e.course_id
+                    WHERE e.student_id = ? AND e.$enrollSemesterCol = ?"
+                    . ($hasYear ? " AND e.year = ?" : "");
+                $currentCreditParams = [$studentId, $semesterValue];
+                if ($hasYear) $currentCreditParams[] = $year;
+                $currentCreditRow = fetchOneAssoc($conn, $currentCreditSql, $currentCreditParams);
+                $currentCredits = (float)($currentCreditRow["current_credits"] ?? 0);
 
-                $today = date("Y-m-d");
-                $connOk = true;
-
-                $existsSql = "
-                    SELECT TOP 1 1 AS ok
-                    FROM $enrollTable
-                    WHERE student_id = ? AND course_id = ? AND semester = ? AND year = ?
-                ";
-
-                foreach ($courseIds as $cid) {
-                    $ex = sqlsrv_query($conn, $existsSql, [$studentId, $cid, $values["term"], $year]);
-                    $already = false;
-                    if ($ex !== false) {
-                        $row = sqlsrv_fetch_array($ex, SQLSRV_FETCH_ASSOC);
-                        $already = $row ? true : false;
-                        sqlsrv_free_stmt($ex);
-                    }
-
-                    if ($already) {
-                        continue;
-                    }
-
-                    $ins = sqlsrv_query($conn, $insertSql, [$studentId, $cid, $values["term"], $year, $today]);
-                    if ($ins === false) {
-                        $connOk = false;
-                        $errorMsg = "Insert failed.";
-                        if ($debug) {
-                            $errorMsg .= " " . print_r(sqlsrv_errors(), true);
-                        }
-                        break;
-                    }
-                    sqlsrv_free_stmt($ins);
+                $studentGpa = null;
+                if ($gpaCol !== null) {
+                    $gpaSql = "
+                        SELECT AVG(CAST(r.$gpaCol AS float)) AS cgpa
+                        FROM $resultTable r
+                        WHERE r.$gpaCol IS NOT NULL
+                          AND r.enrollment_id IN (
+                              SELECT e.enrollment_id FROM $enrollTable e WHERE e.student_id = ?
+                          )";
+                    $gpaRow = fetchOneAssoc($conn, $gpaSql, [$studentId]);
+                    if ($gpaRow && $gpaRow["cgpa"] !== null) $studentGpa = (float)$gpaRow["cgpa"];
                 }
 
-                if ($connOk && $errorMsg === "") {
-                    header("Location: list.php?success=1");
-                    exit();
+                $currentMaxCredits = $DEFAULT_MAX_CREDITS;
+                if ($studentGpa !== null) {
+                    if ($studentGpa < 2.00) $currentMaxCredits = 12;
+                    elseif ($studentGpa < 3.00) $currentMaxCredits = 15;
+                }
+
+                $projectedCredits = $currentCredits + $selectedCredits;
+                if ($projectedCredits > $currentMaxCredits) {
+                    $errorMsg = "Credit limit exceeded. Current credits: $currentCredits, selected credits: $selectedCredits, maximum allowed: $currentMaxCredits.";
+                } elseif ($currentCredits <= 0 && $selectedCredits < $MIN_CREDITS) {
+                    $errorMsg = "Minimum credit requirement not met. Select at least $MIN_CREDITS credits for a regular semester.";
+                } else {
+                    $duplicateCourses = [];
+                    $passedCourses = [];
+                    $prerequisiteErrors = [];
+                    $capacityErrors = [];
+
+                    foreach ($courseIds as $cid) {
+                        $courseLabel = (string)($courseInfoMap[$cid]["course_name"] ?? ("Course #" . $cid));
+
+                        $dupSql = "
+                            SELECT TOP 1 1 AS ok
+                            FROM $enrollTable
+                            WHERE student_id = ? AND course_id = ? AND $enrollSemesterCol = ?"
+                            . ($hasYear ? " AND year = ?" : "");
+                        $dupParams = [$studentId, $cid, $semesterValue];
+                        if ($hasYear) $dupParams[] = $year;
+                        if (fetchOneAssoc($conn, $dupSql, $dupParams)) {
+                            $duplicateCourses[] = $courseLabel;
+                        }
+
+                        if ($gradeCol !== null) {
+                            $passSql = "
+                                SELECT TOP 1 r.$gradeCol AS grade
+                                FROM $resultTable r
+                                JOIN $enrollTable e ON e.enrollment_id = r.enrollment_id
+                                WHERE e.student_id = ? AND e.course_id = ?
+                                ORDER BY e.enrollment_id DESC";
+                            $passRow = fetchOneAssoc($conn, $passSql, [$studentId, $cid]);
+                            if ($passRow && isPassingGrade($passRow["grade"] ?? "")) {
+                                $passedCourses[] = $courseLabel;
+                            }
+                        }
+
+                        if ($coursePrereqCol !== null && $gradeCol !== null) {
+                            $prereqRow = fetchOneAssoc($conn, "SELECT $coursePrereqCol AS prereq_id FROM $courseTable WHERE course_id = ?", [$cid]);
+                            $prereqId = (int)($prereqRow["prereq_id"] ?? 0);
+                            if ($prereqId > 0) {
+                                $prereqPassSql = "
+                                    SELECT TOP 1 r.$gradeCol AS grade
+                                    FROM $resultTable r
+                                    JOIN $enrollTable e ON e.enrollment_id = r.enrollment_id
+                                    WHERE e.student_id = ? AND e.course_id = ?
+                                    ORDER BY e.enrollment_id DESC";
+                                $prereqPassRow = fetchOneAssoc($conn, $prereqPassSql, [$studentId, $prereqId]);
+                                if (!$prereqPassRow || !isPassingGrade($prereqPassRow["grade"] ?? "")) {
+                                    $prerequisiteErrors[] = $courseLabel;
+                                }
+                            }
+                        }
+
+                        if ($courseSeatLimitCol !== null) {
+                            $seatInfo = fetchOneAssoc($conn, "SELECT $courseSeatLimitCol AS seat_limit FROM $courseTable WHERE course_id = ?", [$cid]);
+                            $seatLimit = (int)($seatInfo["seat_limit"] ?? 0);
+                            if ($seatLimit > 0) {
+                                $seatSql = "
+                                    SELECT COUNT(*) AS seat_count
+                                    FROM $enrollTable
+                                    WHERE course_id = ? AND $enrollSemesterCol = ?"
+                                    . ($hasYear ? " AND year = ?" : "");
+                                $seatParams = [$cid, $semesterValue];
+                                if ($hasYear) $seatParams[] = $year;
+                                $seatRow = fetchOneAssoc($conn, $seatSql, $seatParams);
+                                if ((int)($seatRow["seat_count"] ?? 0) >= $seatLimit) {
+                                    $capacityErrors[] = $courseLabel;
+                                }
+                            }
+                        }
+                    }
+
+                    if ($duplicateCourses) {
+                        $errorMsg = "Prevent duplicate enrollment: already enrolled in " . implode(", ", $duplicateCourses) . ".";
+                    } elseif ($passedCourses) {
+                        $errorMsg = "Already passed course check failed for: " . implode(", ", $passedCourses) . ".";
+                    } elseif ($prerequisiteErrors) {
+                        $errorMsg = "Prerequisite check failed for: " . implode(", ", $prerequisiteErrors) . ".";
+                    } elseif ($capacityErrors) {
+                        $errorMsg = "Seat limit is full for: " . implode(", ", $capacityErrors) . ".";
+                    } else {
+                        $insertCols = ["student_id", "course_id", $enrollSemesterCol];
+                        $insertQs = ["?", "?", "?"];
+                        if ($hasYear) {
+                            $insertCols[] = "year";
+                            $insertQs[] = "?";
+                        }
+                        if ($hasEnrollmentDate) {
+                            $insertCols[] = "enrollment_date";
+                            $insertQs[] = "?";
+                        }
+
+                        $insertSql = "
+                            INSERT INTO $enrollTable (" . implode(", ", $insertCols) . ")
+                            VALUES (" . implode(", ", $insertQs) . ")
+                        ";
+
+                        if (!sqlsrv_begin_transaction($conn)) {
+                            $errorMsg = "Could not start enrollment transaction.";
+                        } else {
+                            $allInserted = true;
+                            foreach ($courseIds as $cid) {
+                                $insertParams = [$studentId, $cid, $semesterValue];
+                                if ($hasYear) $insertParams[] = $year;
+                                if ($hasEnrollmentDate) $insertParams[] = date("Y-m-d");
+
+                                $ins = sqlsrv_query($conn, $insertSql, $insertParams);
+                                if ($ins === false) {
+                                    $allInserted = false;
+                                    $errorMsg = "Enrollment insert failed" . ($debug ? ": " . sqlErrorText() : ".");
+                                    break;
+                                }
+                                sqlsrv_free_stmt($ins);
+                            }
+
+                            if ($allInserted) {
+                                sqlsrv_commit($conn);
+                                header("Location: list.php?success=1");
+                                exit();
+                            }
+
+                            sqlsrv_rollback($conn);
+                        }
+                    }
                 }
             }
         }
@@ -397,9 +659,9 @@ $name = $_SESSION["name"] ?? "User";
               </div>
 
               <div class="field">
-                <label>Term *</label>
-                <select name="term" required>
-                  <option value="">Select Term</option>
+                <label><?php echo $semesterIsNumeric ? "Semester Session" : "Semester Name"; ?> *</label>
+                <select id="term" name="term" <?php echo $semesterIsNumeric ? "disabled" : "required"; ?>>
+                  <option value=""><?php echo $semesterIsNumeric ? "Auto from student semester" : "Select Term"; ?></option>
                   <?php foreach ($termOptions as $opt): ?>
                     <option value="<?php echo h($opt); ?>" <?php echo ($values["term"] === $opt) ? "selected" : ""; ?>>
                       <?php echo h($opt); ?>
@@ -410,7 +672,7 @@ $name = $_SESSION["name"] ?? "User";
 
               <div class="field">
                 <label>Year *</label>
-                <input type="number" name="year" placeholder="e.g., 2025" value="<?php echo h($values["year"]); ?>" required min="2000" max="2100" />
+                <input id="year" type="number" name="year" placeholder="e.g., 2025" value="<?php echo h($values["year"]); ?>" <?php echo $hasYear ? "required" : "disabled"; ?> min="2000" max="2100" />
               </div>
 
               <div class="field">
@@ -434,7 +696,7 @@ $name = $_SESSION["name"] ?? "User";
                         $cdept = (int)($c["dept_id"] ?? 0);
                         $checked = in_array((string)$cid, array_map("strval", $values["course_ids"]), true);
                       ?>
-                      <div class="course-item courseRow" data-dept-id="<?php echo $cdept; ?>">
+                      <div class="course-item courseRow" data-dept-id="<?php echo $cdept; ?>" data-course-id="<?php echo $cid; ?>">
                         <div class="course-left">
                           <input
                             class="courseCheck"
@@ -476,12 +738,17 @@ $name = $_SESSION["name"] ?? "User";
 
           <div class="sum-row">
             <div style="color:var(--muted);font-weight:900;">Maximum Credits</div>
-            <div style="font-weight:950;"><?php echo (int)$MAX_CREDITS; ?></div>
+            <div id="maxCredits" style="font-weight:950;"><?php echo (int)$currentMaxCredits; ?></div>
+          </div>
+
+          <div class="sum-row">
+            <div style="color:var(--muted);font-weight:900;">Minimum Credits</div>
+            <div style="font-weight:950;"><?php echo (int)$MIN_CREDITS; ?></div>
           </div>
 
           <div class="sum-row">
             <div style="color:var(--muted);font-weight:900;">Remaining</div>
-            <div id="remCredits" style="font-weight:950;color:#16a34a;"><?php echo (int)$MAX_CREDITS; ?></div>
+            <div id="remCredits" style="font-weight:950;color:#16a34a;"><?php echo (int)$currentMaxCredits; ?></div>
           </div>
 
           <div class="sum-row" style="align-items:flex-start;flex-direction:column;gap:10px;">
@@ -505,27 +772,84 @@ $name = $_SESSION["name"] ?? "User";
 
 <script>
 (function(){
-  const MAX = <?php echo (int)$MAX_CREDITS; ?>;
+  const DEFAULT_MAX = <?php echo (int)$DEFAULT_MAX_CREDITS; ?>;
+  const SEMESTER_IS_NUMERIC = <?php echo $semesterIsNumeric ? "true" : "false"; ?>;
+  const HAS_YEAR = <?php echo $hasYear ? "true" : "false"; ?>;
+  const enrollmentMap = <?php echo json_encode($existingEnrollmentMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?> || {};
+  const studentMaxCreditsMap = <?php echo json_encode($studentMaxCreditMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?> || {};
   const studentSelect = document.getElementById("student_id");
+  const termSelect = document.getElementById("term");
+  const yearInput = document.getElementById("year");
   const courseRows = Array.from(document.querySelectorAll(".courseRow"));
   const checks = Array.from(document.querySelectorAll(".courseCheck"));
   const cur = document.getElementById("curCredits");
+  const max = document.getElementById("maxCredits");
   const rem = document.getElementById("remCredits");
   const pct = document.getElementById("usagePct");
   const bar = document.getElementById("usageBar");
   const warn = document.getElementById("warnBox");
   const studentSemesterDisplay = document.getElementById("studentSemesterDisplay");
 
+  function getSelectedStudentOption(){
+    return studentSelect ? studentSelect.options[studentSelect.selectedIndex] : null;
+  }
+
+  function getSemesterValue(selected){
+    if (!selected) return "";
+    if (SEMESTER_IS_NUMERIC) {
+      return selected.getAttribute("data-student-semester") || "";
+    }
+    return termSelect ? termSelect.value.trim() : "";
+  }
+
+  function getYearValue(){
+    if (!HAS_YEAR || !yearInput) return "";
+    return yearInput.value.trim();
+  }
+
+  function getEnrollmentKey(selected){
+    return getSemesterValue(selected) + "|" + getYearValue();
+  }
+
+  function getCurrentEnrollmentInfo(){
+    const selected = getSelectedStudentOption();
+    const studentId = selected ? (selected.value || "") : "";
+    if (!studentId) {
+      return { currentCredits: 0, courseIds: [] };
+    }
+
+    const key = getEnrollmentKey(selected);
+    const studentEntries = enrollmentMap[studentId] || {};
+    const currentEntry = studentEntries[key] || { currentCredits: 0, courseIds: [] };
+    return {
+      currentCredits: parseFloat(currentEntry.currentCredits || 0),
+      courseIds: Array.isArray(currentEntry.courseIds) ? currentEntry.courseIds.map(String) : []
+    };
+  }
+
+  function getCurrentMaxCredits(){
+    const selected = getSelectedStudentOption();
+    const studentId = selected ? (selected.value || "") : "";
+    if (!studentId) return DEFAULT_MAX;
+    return parseFloat(studentMaxCreditsMap[studentId] || DEFAULT_MAX);
+  }
+
   function filterCoursesByStudentDept(){
-    const selected = studentSelect.options[studentSelect.selectedIndex];
+    const selected = getSelectedStudentOption();
     const deptId = selected ? selected.getAttribute("data-dept-id") : "";
     const studentSemester = selected ? selected.getAttribute("data-student-semester") : "";
+    const currentEnrollment = getCurrentEnrollmentInfo();
+    const alreadyEnrolled = new Set(currentEnrollment.courseIds);
     studentSemesterDisplay.value = studentSemester ? ("Semester " + studentSemester) : "";
 
     courseRows.forEach(row => {
       const rowDeptId = row.getAttribute("data-dept-id") || "";
+      const rowCourseId = row.getAttribute("data-course-id") || "";
       const checkbox = row.querySelector(".courseCheck");
-      if (!deptId || rowDeptId === deptId) {
+      const allowedByDepartment = !deptId || rowDeptId === deptId;
+      const alreadyTakenThisSemester = alreadyEnrolled.has(String(rowCourseId));
+
+      if (allowedByDepartment && !alreadyTakenThisSemester) {
         row.style.display = "";
       } else {
         row.style.display = "none";
@@ -537,29 +861,45 @@ $name = $_SESSION["name"] ?? "User";
   }
 
   function calc(){
-    let total = 0;
+    const currentEnrollment = getCurrentEnrollmentInfo();
+    const currentMax = getCurrentMaxCredits();
+    let selectedTotal = 0;
+
     checks.forEach(ch => {
       const row = ch.closest(".courseRow");
       if (row && row.style.display !== "none" && ch.checked) {
-        total += parseFloat(ch.getAttribute("data-credits") || "0");
+        selectedTotal += parseFloat(ch.getAttribute("data-credits") || "0");
       }
     });
 
-    cur.textContent = total;
-    const remaining = MAX - total;
-    rem.textContent = remaining;
+    const total = currentEnrollment.currentCredits + selectedTotal;
+    cur.textContent = total.toFixed(1).replace(/\.0$/, "");
+    max.textContent = currentMax.toFixed(1).replace(/\.0$/, "");
+
+    const remaining = currentMax - total;
+    rem.textContent = remaining.toFixed(1).replace(/\.0$/, "");
     rem.style.color = remaining < 0 ? "#dc2626" : "#16a34a";
 
-    const usage = MAX === 0 ? 0 : Math.round((total / MAX) * 100);
+    const usage = currentMax === 0 ? 0 : Math.round((total / currentMax) * 100);
     pct.textContent = usage + "%";
     bar.style.width = Math.max(0, Math.min(100, usage)) + "%";
 
-    warn.style.display = total > MAX ? "block" : "none";
+    warn.textContent = "Selected credits exceed maximum.";
+    warn.style.display = total > currentMax ? "block" : "none";
   }
 
   if (studentSelect) {
     studentSelect.addEventListener("change", filterCoursesByStudentDept);
     filterCoursesByStudentDept();
+  }
+
+  if (termSelect) {
+    termSelect.addEventListener("change", filterCoursesByStudentDept);
+  }
+
+  if (yearInput) {
+    yearInput.addEventListener("input", filterCoursesByStudentDept);
+    yearInput.addEventListener("change", filterCoursesByStudentDept);
   }
 
   checks.forEach(ch => ch.addEventListener("change", calc));

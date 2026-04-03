@@ -17,6 +17,13 @@ function h($v) {
     return htmlspecialchars((string)$v, ENT_QUOTES, "UTF-8");
 }
 
+function colExists($conn, $table, $column) {
+    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
+    if ($stmt === false) return false;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    return isset($row["len"]) && $row["len"] !== null;
+}
+
 $displayName = $_SESSION["user_name"]
     ?? $_SESSION["name"]
     ?? $_SESSION["username"]
@@ -32,6 +39,16 @@ $okMsg = "";
 $success = (int)($_GET["success"] ?? 0);
 if ($success === 1) $okMsg = "Result added successfully.";
 
+$courseNameCol = colExists($conn, "dbo.COURSE", "course_name") ? "course_name" : (colExists($conn, "dbo.COURSE", "title") ? "title" : "name");
+$courseCodeCol = null;
+foreach (["course_code", "code"] as $candidate) {
+    if (colExists($conn, "dbo.COURSE", $candidate)) {
+        $courseCodeCol = $candidate;
+        break;
+    }
+}
+$hasEnrollYear = colExists($conn, "dbo.ENROLLMENT", "year");
+
 $params = [];
 $where = "1=1";
 
@@ -39,12 +56,15 @@ if ($q !== "") {
     $where .= " AND (
         s.student_id LIKE ? OR
         s.name LIKE ? OR
-        c.course_code LIKE ? OR
-        c.course_name LIKE ? OR
+        " . ($courseCodeCol !== null ? "c.$courseCodeCol LIKE ? OR" : "") . "
+        c.$courseNameCol LIKE ? OR
         r.grade LIKE ?
     )";
     $like = "%" . $q . "%";
-    $params = [$like, $like, $like, $like, $like];
+    $params = [$like, $like];
+    if ($courseCodeCol !== null) $params[] = $like;
+    $params[] = $like;
+    $params[] = $like;
 }
 
 $countSql = "
@@ -74,17 +94,17 @@ $listSql = "
         r.marks,
         r.grade,
         e.semester,
-        e.year,
+        " . ($hasEnrollYear ? "e.year," : "NULL AS year,") . "
         s.student_id AS student_code,
         s.name AS student_name,
-        c.course_code,
-        c.course_name
+        " . ($courseCodeCol !== null ? "c.$courseCodeCol AS course_code," : "CONVERT(VARCHAR(50), c.course_id) AS course_code,") . "
+        c.$courseNameCol AS course_name
     FROM RESULT r
     JOIN ENROLLMENT e ON e.enrollment_id = r.enrollment_id
     JOIN STUDENT s ON s.student_id = e.student_id
     JOIN COURSE c ON c.course_id = e.course_id
     WHERE $where
-    ORDER BY e.year DESC, e.semester DESC, s.name ASC, c.course_code ASC
+    ORDER BY " . ($hasEnrollYear ? "e.year DESC," : "") . " e.semester DESC, s.name ASC, " . ($courseCodeCol !== null ? "c.$courseCodeCol" : "c.$courseNameCol") . " ASC
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 ";
 $paramsPaged = array_merge($params, [$offset, $perPage]);
