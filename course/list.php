@@ -61,6 +61,11 @@ foreach (["teacher_id"] as $c) {
     if (colExists($conn, $courseTable, $c)) { $courseTeacherFkCol = $c; break; }
 }
 
+$coursePrereqCol = null;
+foreach (["prerequisite_course_id", "prerequisite_id", "prereq_course_id"] as $c) {
+    if (colExists($conn, $courseTable, $c)) { $coursePrereqCol = $c; break; }
+}
+
 /* ---------- DEPARTMENT columns ---------- */
 $deptIdCol = null;
 foreach (["dept_id", "department_id", "id"] as $c) {
@@ -150,6 +155,10 @@ $joinTeacher = ($courseTeacherFkCol !== null)
     ? "LEFT JOIN $teacherTable t ON t.$teacherIdCol = c.$courseTeacherFkCol"
     : "";
 
+$joinPrereq = ($coursePrereqCol !== null)
+    ? "LEFT JOIN $courseTable p ON p.$courseIdCol = c.$coursePrereqCol"
+    : "";
+
 if ($search !== "") {
     $searchParts = [];
     if ($courseCodeCol !== null) $searchParts[] = "c.$courseCodeCol LIKE ?";
@@ -185,6 +194,7 @@ $countSql = "
     FROM $courseTable c
     $joinDept
     $joinTeacher
+    $joinPrereq
     WHERE $where
 ";
 $countStmt = sqlsrv_query($conn, $countSql, $params);
@@ -206,6 +216,7 @@ $cols[] = "c.$courseNameCol AS course_name";
 if ($creditCol !== null) $cols[] = "c.$creditCol AS credit_hours";
 if ($courseDeptFkCol !== null) $cols[] = "d.$deptNameCol AS department_name";
 if ($courseTeacherFkCol !== null) $cols[] = "t.$teacherNameCol AS teacher_name";
+if ($coursePrereqCol !== null) $cols[] = "p.$courseNameCol AS prerequisite_name";
 
 $orderBy = ($courseIdCol !== null) ? "c.$courseIdCol DESC" : "c.$courseNameCol ASC";
 
@@ -214,6 +225,7 @@ $listSql = "
     FROM $courseTable c
     $joinDept
     $joinTeacher
+    $joinPrereq
     WHERE $where
     ORDER BY $orderBy
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
@@ -354,13 +366,14 @@ $name = $_SESSION["name"] ?? "User";
               <th style="width:280px;">Course Name</th>
               <th style="width:120px;">Credits</th>
               <th style="width:180px;">Department</th>
-              <th style="width:180px;">Teacher</th>
-              <th style="width:150px; text-align:right;">Actions</th>
+                <th style="width:180px;">Teacher</th>
+                <th style="width:180px;">Prerequisite</th>
+                <th style="width:150px; text-align:right;">Actions</th>
             </tr>
           </thead>
           <tbody>
             <?php if (count($rows) === 0): ?>
-              <tr><td colspan="6" class="muted">No courses found.</td></tr>
+              <tr><td colspan="7" class="muted">No courses found.</td></tr>
             <?php else: ?>
               <?php foreach ($rows as $c): ?>
                 <?php
@@ -376,6 +389,7 @@ $name = $_SESSION["name"] ?? "User";
                   <td><?php echo h($credits); ?></td>
                   <td><?php echo h($dept); ?></td>
                   <td><?php echo h($teacher); ?></td>
+                  <td><?php echo h((string)($c["prerequisite_name"] ?? "â€”")); ?></td>
                   <td style="text-align:right;">
                     <div class="actions">
                       <a class="icon-btn icon-edit" href="edit.php?id=<?php echo $id; ?>" title="Edit">

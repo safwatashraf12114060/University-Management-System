@@ -17,6 +17,33 @@ function h($v) {
     return htmlspecialchars((string)($v ?? ""), ENT_QUOTES, "UTF-8");
 }
 
+function colExists($conn, $table, $column) {
+    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
+    if ($stmt === false) return false;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    return isset($row["len"]) && $row["len"] !== null;
+}
+
+$deptTable = "DEPARTMENT";
+$codeCandidates = ["department_code", "dept_code", "code"];
+$headCandidates = ["department_head", "dept_head", "head"];
+
+$codeCol = null;
+foreach ($codeCandidates as $c) {
+    if (colExists($conn, "dbo.$deptTable", $c) || colExists($conn, $deptTable, $c)) {
+        $codeCol = $c;
+        break;
+    }
+}
+
+$headCol = null;
+foreach ($headCandidates as $c) {
+    if (colExists($conn, "dbo.$deptTable", $c) || colExists($conn, $deptTable, $c)) {
+        $headCol = $c;
+        break;
+    }
+}
+
 $error = "";
 $values = [
     "dept_name" => "",
@@ -32,12 +59,23 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     if ($values["dept_name"] === "") {
         $error = "Department name is required.";
     } else {
-        $sql = "INSERT INTO dbo.DEPARTMENT (name, dept_code, dept_head) VALUES (?, ?, ?)";
-        $params = [
-            $values["dept_name"],
-            ($values["dept_code"] !== "" ? $values["dept_code"] : null),
-            ($values["dept_head"] !== "" ? $values["dept_head"] : null)
-        ];
+        $cols = ["name"];
+        $qs = ["?"];
+        $params = [$values["dept_name"]];
+
+        if ($codeCol !== null) {
+            $cols[] = $codeCol;
+            $qs[] = "?";
+            $params[] = ($values["dept_code"] !== "" ? $values["dept_code"] : null);
+        }
+
+        if ($headCol !== null) {
+            $cols[] = $headCol;
+            $qs[] = "?";
+            $params[] = ($values["dept_head"] !== "" ? $values["dept_head"] : null);
+        }
+
+        $sql = "INSERT INTO dbo.DEPARTMENT (" . implode(", ", $cols) . ") VALUES (" . implode(", ", $qs) . ")";
 
         $st = sqlsrv_query($conn, $sql, $params);
 
@@ -165,6 +203,7 @@ $name = $_SESSION["name"] ?? "User";
                 name="dept_code"
                 value="<?php echo h($values["dept_code"]); ?>"
                 placeholder="CSE"
+                <?php echo $codeCol === null ? "disabled" : ""; ?>
               />
             </div>
 
@@ -174,6 +213,7 @@ $name = $_SESSION["name"] ?? "User";
                 name="dept_head"
                 value="<?php echo h($values["dept_head"]); ?>"
                 placeholder=" Dr. Shamim Akter"
+                <?php echo $headCol === null ? "disabled" : ""; ?>
               />
             </div>
           </div>

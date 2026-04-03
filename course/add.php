@@ -105,6 +105,11 @@ foreach (["teacher_id"] as $c) {
     if (colExists($conn, $courseTable, $c)) { $courseTeacherFkCol = $c; break; }
 }
 
+$coursePrereqCol = null;
+foreach (["prerequisite_course_id", "prerequisite_id", "prereq_course_id"] as $c) {
+    if (colExists($conn, $courseTable, $c)) { $coursePrereqCol = $c; break; }
+}
+
 $descCol = null;
 foreach (["description", "details", "course_description"] as $c) {
     if (colExists($conn, $courseTable, $c)) { $descCol = $c; break; }
@@ -133,6 +138,18 @@ if ($tSt !== false) {
     sqlsrv_free_stmt($tSt);
 }
 
+$prerequisiteCourses = [];
+if ($coursePrereqCol !== null) {
+    $prSql = "SELECT c.course_id, " . ($courseCodeCol !== null ? "c.$courseCodeCol AS course_code, " : "CONVERT(VARCHAR(50), c.course_id) AS course_code, ") . "c.$courseNameCol AS course_name FROM $courseTable c ORDER BY " . ($courseCodeCol !== null ? "c.$courseCodeCol ASC" : "c.$courseNameCol ASC");
+    $prSt = sqlsrv_query($conn, $prSql);
+    if ($prSt !== false) {
+        while ($r = sqlsrv_fetch_array($prSt, SQLSRV_FETCH_ASSOC)) {
+            $prerequisiteCourses[] = $r;
+        }
+        sqlsrv_free_stmt($prSt);
+    }
+}
+
 /* ---------------------------
    Handle form submit
 ---------------------------- */
@@ -144,6 +161,7 @@ $values = [
     "credit_hours" => trim((string)($_POST["credit_hours"] ?? "")),
     "dept_id"      => trim((string)($_POST["dept_id"] ?? "")),
     "teacher_id"   => trim((string)($_POST["teacher_id"] ?? "")),
+    "prerequisite_course_id" => trim((string)($_POST["prerequisite_course_id"] ?? "")),
     "description"  => trim((string)($_POST["description"] ?? "")),
 ];
 
@@ -164,6 +182,17 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $error = "Department is required.";
         } elseif ($courseTeacherFkCol !== null && $values["teacher_id"] === "") {
             $error = "Teacher is required.";
+        } elseif ($coursePrereqCol !== null && $values["prerequisite_course_id"] !== "") {
+            foreach ($prerequisiteCourses as $pr) {
+                if ((string)($pr["course_id"] ?? "") === $values["prerequisite_course_id"]) {
+                    if ($courseCodeCol !== null && (string)($pr["course_code"] ?? "") === $values["course_code"]) {
+                        $error = "A course cannot be its own prerequisite.";
+                    } elseif ($courseCodeCol === null && (string)($pr["course_name"] ?? "") === $values["course_name"]) {
+                        $error = "A course cannot be its own prerequisite.";
+                    }
+                    break;
+                }
+            }
         } else {
             if ($courseCodeCol !== null) {
                 $dupSql = "SELECT TOP 1 1 AS ok FROM $courseTable WHERE $courseCodeCol = ?";
@@ -211,6 +240,12 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                     $cols[] = $courseTeacherFkCol;
                     $qs[] = "?";
                     $params[] = (int)$values["teacher_id"];
+                }
+
+                if ($coursePrereqCol !== null) {
+                    $cols[] = $coursePrereqCol;
+                    $qs[] = "?";
+                    $params[] = ($values["prerequisite_course_id"] !== "" ? (int)$values["prerequisite_course_id"] : null);
                 }
 
                 if ($descCol !== null) {
@@ -395,6 +430,21 @@ $name = $_SESSION["name"] ?? "User";
                     <?php $tid = (int)($t["teacher_id"] ?? 0); ?>
                     <option value="<?php echo $tid; ?>" <?php echo ((string)$values["teacher_id"] === (string)$tid) ? "selected" : ""; ?>>
                       <?php echo h($t["teacher_name"] ?? ""); ?>
+                    </option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+            <?php endif; ?>
+
+            <?php if ($coursePrereqCol !== null): ?>
+              <div class="field full">
+                <label for="prerequisite_course_id">Prerequisite Course</label>
+                <select id="prerequisite_course_id" name="prerequisite_course_id">
+                  <option value="">No prerequisite</option>
+                  <?php foreach ($prerequisiteCourses as $pr): ?>
+                    <?php $prId = (int)($pr["course_id"] ?? 0); ?>
+                    <option value="<?php echo $prId; ?>" <?php echo ((string)$values["prerequisite_course_id"] === (string)$prId) ? "selected" : ""; ?>>
+                      <?php echo h(($pr["course_code"] ?? "") . " - " . ($pr["course_name"] ?? "")); ?>
                     </option>
                   <?php endforeach; ?>
                 </select>

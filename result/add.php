@@ -28,6 +28,13 @@ function addSqlsrvError($baseMsg, $debug) {
     return $baseMsg . "\n" . print_r($e, true);
 }
 
+function colExists($conn, $table, $column) {
+    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
+    if ($stmt === false) return false;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    return isset($row["len"]) && $row["len"] !== null;
+}
+
 function calcGrade($marks) {
     $m = (float)$marks;
     if ($m >= 90) return "A";
@@ -55,8 +62,31 @@ if ($st !== false) {
     while ($r = sqlsrv_fetch_array($st, SQLSRV_FETCH_ASSOC)) $students[] = $r;
 }
 
+$courseNameCol = colExists($conn, "dbo.COURSE", "course_name") ? "course_name" : (colExists($conn, "dbo.COURSE", "title") ? "title" : "name");
+$courseCodeCol = null;
+foreach (["course_code", "code"] as $candidate) {
+    if (colExists($conn, "dbo.COURSE", $candidate)) {
+        $courseCodeCol = $candidate;
+        break;
+    }
+}
+$hasEnrollYear = colExists($conn, "dbo.ENROLLMENT", "year");
+$semesterIsNumeric = true;
+$semTypeStmt = sqlsrv_query($conn, "
+    SELECT DATA_TYPE AS type_name
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'ENROLLMENT' AND COLUMN_NAME = 'semester'
+");
+if ($semTypeStmt !== false) {
+    $semTypeRow = sqlsrv_fetch_array($semTypeStmt, SQLSRV_FETCH_ASSOC);
+    $semesterIsNumeric = in_array(strtolower((string)($semTypeRow["type_name"] ?? "")), ["int", "smallint", "tinyint", "bigint"], true);
+    sqlsrv_free_stmt($semTypeStmt);
+}
+
 $courses = [];
-$ct = sqlsrv_query($conn, "SELECT course_id, course_code, course_name FROM COURSE ORDER BY course_code ASC");
+$courseSelect = "course_id, " . ($courseCodeCol !== null ? "$courseCodeCol AS course_code, " : "") . "$courseNameCol AS course_name";
+$courseOrder = $courseCodeCol !== null ? $courseCodeCol : $courseNameCol;
+$ct = sqlsrv_query($conn, "SELECT $courseSelect FROM COURSE ORDER BY $courseOrder ASC");
 if ($ct !== false) {
     while ($r = sqlsrv_fetch_array($ct, SQLSRV_FETCH_ASSOC)) $courses[] = $r;
 }
@@ -66,7 +96,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     if (!hash_equals($_SESSION["csrf_token"], $token)) {
         $error = "Invalid request token.";
     } else {
-        if ($student_id === "" || $course_id <= 0 || $semester === "" || $year <= 0 || $marks === "") {
+        if ($student_id === "" || $course_id <= 0 || $semester === "" || ($hasEnrollYear && $year <= 0) || $marks === "") {
             $error = "All required fields must be filled.";
         } else {
             $m = (float)$marks;
@@ -79,10 +109,14 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $enSql = "
                 SELECT TOP 1 e.enrollment_id
                 FROM ENROLLMENT e
-                WHERE e.student_id = ? AND e.course_id = ? AND e.semester = ? AND e.year = ?
+                WHERE e.student_id = ? AND e.course_id = ? AND e.semester = ?"
+                . ($hasEnrollYear ? " AND e.year = ?" : "") . "
                 ORDER BY e.enrollment_id DESC
             ";
-            $enSt = sqlsrv_query($conn, $enSql, [$student_id, $course_id, $semester, $year]);
+            $semesterValue = $semesterIsNumeric ? (int)$semester : $semester;
+            $enParams = [$student_id, $course_id, $semesterValue];
+            if ($hasEnrollYear) $enParams[] = $year;
+            $enSt = sqlsrv_query($conn, $enSql, $enParams);
             $enRow = $enSt ? sqlsrv_fetch_array($enSt, SQLSRV_FETCH_ASSOC) : null;
             $enrollmentId = (int)($enRow["enrollment_id"] ?? 0);
 
@@ -302,8 +336,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             <div>
               <label for="semester">Semester *</label>
               <select id="semester" name="semester" required>
-                <option value="">Select Semester</option>
-                <?php foreach (["Spring","Summer","Fall"] as $opt): ?>
+                <option value=""><?php echo $semesterIsNumeric ? "Select Semester" : "Select Term"; ?></option>
+                <?php foreach (($semesterIsNumeric ? range(1, 8) : ["Spring","Summer","Fall"]) as $opt): ?>
                   <option value="<?php echo h($opt); ?>" <?php echo ($semester === $opt) ? "selected" : ""; ?>>
                     <?php echo h($opt); ?>
                   </option>
@@ -313,7 +347,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
             <div>
               <label for="year">Year *</label>
-              <input id="year" name="year" type="number" placeholder="e.g., 2025" value="<?php echo $year > 0 ? h($year) : ""; ?>" required>
+              <input id="year" name="year" type="number" placeholder="e.g., 2025" value="<?php echo $year > 0 ? h($year) : ""; ?>" <?php echo $hasEnrollYear ? "required" : "disabled"; ?>>
             </div>
 
             <div>

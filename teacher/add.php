@@ -17,6 +17,20 @@ function h($v) {
     return htmlspecialchars((string)($v ?? ""), ENT_QUOTES, "UTF-8");
 }
 
+function colExists($conn, $table, $column) {
+    $stmt = sqlsrv_query($conn, "SELECT COL_LENGTH(?, ?) AS len", [$table, $column]);
+    if ($stmt === false) return false;
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    return isset($row["len"]) && $row["len"] !== null;
+}
+
+$teacherTable = "TEACHER";
+$hasEmail = colExists($conn, "dbo.$teacherTable", "email") || colExists($conn, $teacherTable, "email");
+$hasPhone = colExists($conn, "dbo.$teacherTable", "phone") || colExists($conn, $teacherTable, "phone");
+$hasDesignation = colExists($conn, "dbo.$teacherTable", "designation") || colExists($conn, $teacherTable, "designation");
+$hasQualification = colExists($conn, "dbo.$teacherTable", "qualification") || colExists($conn, $teacherTable, "qualification");
+$hasHireDate = colExists($conn, "dbo.$teacherTable", "hire_date") || colExists($conn, $teacherTable, "hire_date");
+
 $error = "";
 $values = [
     "name" => "",
@@ -54,21 +68,50 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $values["qualification"] = trim($_POST["qualification"] ?? "");
     $values["hire_date"] = trim($_POST["hire_date"] ?? "");
 
-    if ($values["name"] === "" || $values["dept_id"] === "" || $values["hire_date"] === "") {
-        $error = "Name, department and joining date are required.";
+    if ($values["name"] === "" || $values["dept_id"] === "" || ($hasHireDate && $values["hire_date"] === "")) {
+        $error = $hasHireDate
+            ? "Name, department and joining date are required."
+            : "Name and department are required.";
     } else {
-        $sql = "INSERT INTO dbo.TEACHER (name, dept_id, email, phone, designation, qualification, hire_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?)";
-
+        $cols = ["name", "dept_id"];
+        $qs = ["?", "?"];
         $params = [
             $values["name"],
-            (int)$values["dept_id"],
-            ($values["email"] !== "" ? $values["email"] : null),
-            ($values["phone"] !== "" ? $values["phone"] : null),
-            ($values["designation"] !== "" ? $values["designation"] : null),
-            ($values["qualification"] !== "" ? $values["qualification"] : null),
-            ($values["hire_date"] !== "" ? $values["hire_date"] : null)
+            (int)$values["dept_id"]
         ];
+
+        if ($hasEmail) {
+            $cols[] = "email";
+            $qs[] = "?";
+            $params[] = ($values["email"] !== "" ? $values["email"] : null);
+        }
+
+        if ($hasPhone) {
+            $cols[] = "phone";
+            $qs[] = "?";
+            $params[] = ($values["phone"] !== "" ? $values["phone"] : null);
+        }
+
+        if ($hasDesignation) {
+            $cols[] = "designation";
+            $qs[] = "?";
+            $params[] = ($values["designation"] !== "" ? $values["designation"] : null);
+        }
+
+        if ($hasQualification) {
+            $cols[] = "qualification";
+            $qs[] = "?";
+            $params[] = ($values["qualification"] !== "" ? $values["qualification"] : null);
+        }
+
+        if ($hasHireDate) {
+            $cols[] = "hire_date";
+            $qs[] = "?";
+            $params[] = ($values["hire_date"] !== "" ? $values["hire_date"] : null);
+        }
+
+        $sql = "INSERT INTO dbo.TEACHER (" . implode(", ", $cols) . ")
+                VALUES (" . implode(", ", $qs) . ")";
 
         $st = sqlsrv_query($conn, $sql, $params);
 
@@ -208,6 +251,7 @@ $name = $_SESSION["name"] ?? "User";
                 name="email"
                 value="<?php echo h($values["email"]); ?>"
                 placeholder="zahid.cse@uni.edu"
+                <?php echo $hasEmail ? "" : "disabled"; ?>
               />
             </div>
 
@@ -218,6 +262,7 @@ $name = $_SESSION["name"] ?? "User";
                 name="phone"
                 value="<?php echo h($values["phone"]); ?>"
                 placeholder="+880 234 567 8900"
+                <?php echo $hasPhone ? "" : "disabled"; ?>
               />
             </div>
 
@@ -258,6 +303,7 @@ $name = $_SESSION["name"] ?? "User";
                 name="qualification"
                 value="<?php echo h($values["qualification"]); ?>"
                 placeholder="Ph.D. in Computer Science"
+                <?php echo $hasQualification ? "" : "disabled"; ?>
               />
             </div>
 
@@ -268,7 +314,7 @@ $name = $_SESSION["name"] ?? "User";
                 name="hire_date"
                 type="date"
                 value="<?php echo h($values["hire_date"]); ?>"
-                required
+                <?php echo $hasHireDate ? "required" : "disabled"; ?>
               />
             </div>
           </div>

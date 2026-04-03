@@ -72,10 +72,25 @@ $creditCol = "credit_hours";
 if (colExists($conn, $courseTable, "credits")) $creditCol = "credits";
 if (colExists($conn, $courseTable, "credit")) $creditCol = "credit";
 
+$hasYear = colExists($conn, $enrollTable, "year");
+$semesterIsNumeric = true;
+$semTypeStmt = sqlsrv_query($conn, "
+    SELECT DATA_TYPE AS type_name
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'ENROLLMENT' AND COLUMN_NAME = 'semester'
+");
+if ($semTypeStmt !== false) {
+    $semTypeRow = sqlsrv_fetch_array($semTypeStmt, SQLSRV_FETCH_ASSOC);
+    $semesterIsNumeric = in_array(strtolower((string)($semTypeRow["type_name"] ?? "")), ["int", "smallint", "tinyint", "bigint"], true);
+    sqlsrv_free_stmt($semTypeStmt);
+}
+
 $q = trim($_GET["q"] ?? "");
 $term = trim($_GET["term"] ?? "");
 $year = trim($_GET["year"] ?? "");
 $studentSemester = trim($_GET["student_semester"] ?? "");
+$departmentId = trim($_GET["department_id"] ?? "");
+$courseId = trim($_GET["course_id"] ?? "");
 $page = max(1, (int)($_GET["page"] ?? 1));
 $perPage = (int)($_GET["per_page"] ?? 10);
 if (!in_array($perPage, [5, 10, 20, 50], true)) $perPage = 10;
@@ -114,15 +129,23 @@ $where = "1=1";
 
 if ($term !== "") {
     $where .= " AND e.semester = ?";
-    $params[] = $term;
+    $params[] = $semesterIsNumeric ? (int)$term : $term;
 }
-if ($year !== "") {
+if ($year !== "" && $hasYear) {
     $where .= " AND e.year = ?";
     $params[] = (int)$year;
 }
 if ($studentSemester !== "") {
     $where .= " AND s.semester = ?";
     $params[] = (int)$studentSemester;
+}
+if ($departmentId !== "") {
+    $where .= " AND s.dept_id = ?";
+    $params[] = (int)$departmentId;
+}
+if ($courseId !== "") {
+    $where .= " AND e.course_id = ?";
+    $params[] = (int)$courseId;
 }
 
 if ($q !== "") {
@@ -140,6 +163,37 @@ if ($q !== "") {
     $params[] = $like;
     if ($courseCodeCol) $params[] = $like;
     $params[] = $like;
+}
+
+$departments = [];
+$deptFilterSql = "
+    SELECT d.dept_id, d.$deptNameCol AS department_name
+    FROM $deptTable d
+    ORDER BY d.$deptNameCol ASC
+";
+$deptFilterStmt = sqlsrv_query($conn, $deptFilterSql);
+if ($deptFilterStmt !== false) {
+    while ($r = sqlsrv_fetch_array($deptFilterStmt, SQLSRV_FETCH_ASSOC)) {
+        $departments[] = $r;
+    }
+    sqlsrv_free_stmt($deptFilterStmt);
+}
+
+$coursesForFilter = [];
+$courseFilterSql = "
+    SELECT
+        c.course_id,
+        " . ($courseCodeCol ? "c.$courseCodeCol" : "CONVERT(VARCHAR(50), c.course_id)") . " AS course_code,
+        c.$courseNameCol AS course_name
+    FROM $courseTable c
+    ORDER BY " . ($courseCodeCol ? "c.$courseCodeCol ASC," : "") . " c.$courseNameCol ASC
+";
+$courseFilterStmt = sqlsrv_query($conn, $courseFilterSql);
+if ($courseFilterStmt !== false) {
+    while ($r = sqlsrv_fetch_array($courseFilterStmt, SQLSRV_FETCH_ASSOC)) {
+        $coursesForFilter[] = $r;
+    }
+    sqlsrv_free_stmt($courseFilterStmt);
 }
 
 $countSql = "
@@ -167,7 +221,7 @@ $sql = "
     SELECT
       e.enrollment_id,
       e.semester AS term,
-      e.year,
+      " . ($hasYear ? "e.year" : "NULL AS year") . ",
       s.student_id,
       s.$studentNameCol AS student_name,
       s.semester AS student_semester,
@@ -181,7 +235,7 @@ $sql = "
     JOIN $courseTable c ON c.course_id = e.course_id
     LEFT JOIN $deptTable d ON d.dept_id = s.dept_id
     WHERE $where
-    ORDER BY e.year DESC, e.semester DESC, s.$studentNameCol ASC, c.$courseNameCol ASC
+    ORDER BY " . ($hasYear ? "e.year DESC," : "") . " e.semester DESC, s.$studentNameCol ASC, c.$courseNameCol ASC
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 ";
 
@@ -217,7 +271,7 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
     }
     .enroll-toolbar{
       display:grid;
-      grid-template-columns:minmax(260px, 1.6fr) 210px 170px 180px 90px auto auto;
+      grid-template-columns:minmax(240px, 1.5fr) 180px 160px 180px 220px 260px 90px auto auto;
       gap:12px;
       align-items:stretch;
       margin-bottom:16px;
@@ -245,12 +299,12 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
     }
     @media (max-width: 1280px){
       .enroll-toolbar{
-        grid-template-columns:1fr 180px 150px 170px 90px auto auto;
+        grid-template-columns:1fr 1fr 160px 170px 1fr 1fr 90px auto auto;
       }
     }
     @media (max-width: 1024px){
       .enroll-toolbar{
-        grid-template-columns:1fr 1fr;
+        grid-template-columns:1fr 1fr 1fr;
       }
     }
     @media (max-width: 640px){
@@ -271,7 +325,9 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
       <div class="page-head">
         <h1>Enrollments</h1>
         <div class="page-actions">
-          <a class="btn" href="<?php echo h($pdfPreviewUrl); ?>">Download PDF</a>
+          <a class="btn btn-primary" href="<?php echo h($pdfPreviewUrl); ?>" title="View PDF">
+            View PDF
+          </a>
           <a class="btn btn-primary" href="add.php">
             <span style="font-size:18px;line-height:0;">+</span>
             Enroll Student
@@ -298,15 +354,15 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
           </div>
 
           <select name="term">
-            <option value="">Term (Spring/Fall)</option>
-            <?php foreach (["Spring", "Summer", "Fall"] as $t): ?>
+            <option value=""><?php echo $semesterIsNumeric ? "Semester" : "Term (Spring/Fall)"; ?></option>
+            <?php foreach (($semesterIsNumeric ? range(1, 8) : ["Spring", "Summer", "Fall"]) as $t): ?>
               <option value="<?php echo h($t); ?>" <?php echo $term === $t ? "selected" : ""; ?>>
                 <?php echo h($t); ?>
               </option>
             <?php endforeach; ?>
           </select>
 
-          <input type="number" name="year" value="<?php echo h($year); ?>" placeholder="Year (e.g., 2025)" min="2000" max="2100" />
+          <input type="number" name="year" value="<?php echo h($year); ?>" placeholder="Year (e.g., 2025)" min="2000" max="2100" <?php echo $hasYear ? "" : "disabled"; ?> />
 
           <select name="student_semester">
             <option value="">Student Semester</option>
@@ -315,6 +371,30 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
                 <?php echo $i; ?>
               </option>
             <?php endfor; ?>
+          </select>
+
+          <select name="department_id">
+            <option value="">All Departments</option>
+            <?php foreach ($departments as $dept): ?>
+              <?php $did = (int)($dept["dept_id"] ?? 0); ?>
+              <option value="<?php echo $did; ?>" <?php echo (string)$departmentId === (string)$did ? "selected" : ""; ?>>
+                <?php echo h($dept["department_name"] ?? ""); ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+
+          <select name="course_id">
+            <option value="">All Courses</option>
+            <?php foreach ($coursesForFilter as $course): ?>
+              <?php
+                $filterCourseId = (int)($course["course_id"] ?? 0);
+                $filterCourseCode = trim((string)($course["course_code"] ?? ""));
+                $filterCourseName = (string)($course["course_name"] ?? "");
+              ?>
+              <option value="<?php echo $filterCourseId; ?>" <?php echo (string)$courseId === (string)$filterCourseId ? "selected" : ""; ?>>
+                <?php echo h(($filterCourseCode !== "" ? $filterCourseCode . " - " : "") . $filterCourseName); ?>
+              </option>
+            <?php endforeach; ?>
           </select>
 
           <select name="per_page">
