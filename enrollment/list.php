@@ -270,21 +270,31 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
       flex-wrap:wrap;
     }
     .enroll-toolbar{
-      display:grid;
-      grid-template-columns:minmax(240px, 1.5fr) 180px 160px 180px 220px 260px 90px auto auto;
+      display:flex;
+      flex-wrap:nowrap;
       gap:12px;
-      align-items:stretch;
+      align-items:center;
       margin-bottom:16px;
+      overflow-x:auto;
+      padding-bottom:4px;
+      scrollbar-width:thin;
     }
     .enroll-toolbar .search,
     .enroll-toolbar select,
     .enroll-toolbar input,
     .enroll-toolbar .btn{
       height:44px;
+      flex:0 0 auto;
+    }
+    .enroll-toolbar .search{
+      width:170px;
+      min-width:170px;
+      transition:width .22s ease,min-width .22s ease,box-shadow .22s ease;
     }
     .enroll-toolbar input,
     .enroll-toolbar select{
-      width:100%;
+      width:118px;
+      min-width:118px;
       padding:0 12px;
       border:1px solid #dbe1ea;
       border-radius:12px;
@@ -292,24 +302,36 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
       color:var(--text);
       outline:none;
       font:inherit;
+      transition:width .22s ease,min-width .22s ease,box-shadow .22s ease,border-color .22s ease;
     }
     .enroll-toolbar .btn{
       white-space:nowrap;
       justify-content:center;
     }
-    @media (max-width: 1280px){
-      .enroll-toolbar{
-        grid-template-columns:1fr 1fr 160px 170px 1fr 1fr 90px auto auto;
-      }
+    .enroll-toolbar .search:hover,
+    .enroll-toolbar .search:focus-within{
+      width:280px;
+      min-width:280px;
     }
-    @media (max-width: 1024px){
-      .enroll-toolbar{
-        grid-template-columns:1fr 1fr 1fr;
-      }
+    .enroll-toolbar input:hover,
+    .enroll-toolbar input:focus,
+    .enroll-toolbar select:hover,
+    .enroll-toolbar select:focus{
+      width:210px;
+      min-width:210px;
+      border-color:#94a3b8;
+      box-shadow:0 10px 24px rgba(15,23,42,.10);
     }
-    @media (max-width: 640px){
+    .enroll-toolbar select[name="per_page"]{
+      width:84px;
+      min-width:84px;
+    }
+    .enroll-toolbar .btn{
+      min-width:92px;
+    }
+    @media (max-width: 900px){
       .enroll-toolbar{
-        grid-template-columns:1fr;
+        gap:10px;
       }
     }
   </style>
