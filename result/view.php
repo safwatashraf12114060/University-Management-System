@@ -16,6 +16,7 @@ if (!isset($_SESSION["user_id"])) {
 
 $resultId = (int)($_GET["id"] ?? 0);
 $studentId = (int)($_GET["student_id"] ?? 0);
+ $back = trim((string)($_GET["back"] ?? ""));
 if ($studentId <= 0) {
     $studentId = transcriptResolveStudentId($conn, $resultId);
 }
@@ -37,6 +38,9 @@ $displayName = $_SESSION["user_name"]
     ?? "User";
 $student = $transcript["student"];
 $downloadUrl = "download_pdf.php?student_id=" . urlencode((string)$studentId);
+$backHref = ($back === "student")
+    ? "../student/view.php?student_id=" . urlencode((string)$studentId)
+    : "list.php";
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -209,7 +213,7 @@ $downloadUrl = "download_pdf.php?student_id=" . urlencode((string)$studentId);
   <main class="content">
     <?php renderTopbar($displayName, "", "../logout.php", false); ?>
     <div class="page">
-      <a class="back-link" href="list.php">&#8592; Back to Results</a>
+      <a class="back-link" href="<?php echo transcriptH($backHref); ?>"><?php echo $back === "student" ? "&#8592; Back to Student Details" : "&#8592; Back to Results"; ?></a>
 
       <div class="transcript-header">
         <h1>Student Transcript</h1>

@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
+require_once __DIR__ . "/../partials/activity_log.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -139,12 +141,17 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $up = sqlsrv_query($conn, $sql, $params);
 
         if ($up) {
+            $teacherLabel = trim((string)($values["teacher_name"] ?? ""));
+            $teacherMessage = $teacherLabel !== ""
+                ? "Teacher '" . $teacherLabel . "' was updated."
+                : "Teacher details were updated.";
+            umsLogActivity($conn, "teacher_update", $teacherMessage);
+            umsSetFlash("teachers", "success", "Teacher updated successfully.");
             header("Location: list.php");
             exit();
         }
 
-        $errs = sqlsrv_errors();
-        $error = "Update failed: " . ($errs ? $errs[0]["message"] : "Unknown SQL error");
+        $error = umsFriendlyDbMessage("update", "teacher", sqlsrv_errors(SQLSRV_ERR_ERRORS));
     }
 }
 

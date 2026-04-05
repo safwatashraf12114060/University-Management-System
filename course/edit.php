@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
+require_once __DIR__ . "/../partials/activity_log.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -130,6 +132,14 @@ foreach (["teacher_id", "id"] as $c) {
 }
 if ($teacherIdCol === null) $teacherIdCol = "teacher_id";
 
+$teacherDeptFkCol = null;
+foreach (["dept_id", "department_id"] as $c) {
+    if (colExists($conn, $teacherTable, $c)) {
+        $teacherDeptFkCol = $c;
+        break;
+    }
+}
+
 $teacherNameCol = null;
 foreach (["name", "teacher_name", "full_name"] as $c) {
     if (colExists($conn, $teacherTable, $c)) {
@@ -160,7 +170,9 @@ if ($deptStmt) {
 /* ---------- teachers ---------- */
 $teachers = [];
 if ($courseTeacherFkCol !== null) {
-    $teacherSql = "SELECT $teacherIdCol AS teacher_id, $teacherNameCol AS teacher_name FROM $teacherTable ORDER BY $teacherNameCol ASC";
+    $teacherSql = "SELECT $teacherIdCol AS teacher_id, $teacherNameCol AS teacher_name"
+        . ($teacherDeptFkCol !== null ? ", $teacherDeptFkCol AS dept_id" : "")
+        . " FROM $teacherTable ORDER BY $teacherNameCol ASC";
     $teacherStmt = sqlsrv_query($conn, $teacherSql);
     if ($teacherStmt) {
         while ($tr = sqlsrv_fetch_array($teacherStmt, SQLSRV_FETCH_ASSOC)) {
@@ -172,7 +184,12 @@ if ($courseTeacherFkCol !== null) {
 
 $prerequisiteCourses = [];
 if ($coursePrereqCol !== null) {
-    $prSql = "SELECT c.$courseIdCol AS course_id, " . ($courseCodeCol !== null ? "c.$courseCodeCol AS course_code, " : "CONVERT(VARCHAR(50), c.$courseIdCol) AS course_code, ") . "c.$courseNameCol AS course_name FROM $courseTable c WHERE c.$courseIdCol <> ? ORDER BY " . ($courseCodeCol !== null ? "c.$courseCodeCol ASC" : "c.$courseNameCol ASC");
+    $prSql = "SELECT c.$courseIdCol AS course_id, "
+        . ($courseCodeCol !== null ? "c.$courseCodeCol AS course_code, " : "CONVERT(VARCHAR(50), c.$courseIdCol) AS course_code, ")
+        . "c.$courseNameCol AS course_name"
+        . ($courseDeptFkCol !== null ? ", c.$courseDeptFkCol AS dept_id" : "")
+        . " FROM $courseTable c WHERE c.$courseIdCol <> ? ORDER BY "
+        . ($courseCodeCol !== null ? "c.$courseCodeCol ASC" : "c.$courseNameCol ASC");
     $prStmt = sqlsrv_query($conn, $prSql, [$course_id]);
     if ($prStmt) {
         while ($pr = sqlsrv_fetch_array($prStmt, SQLSRV_FETCH_ASSOC)) {
@@ -233,6 +250,31 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $error = "Course name, credits, and department are required.";
         } elseif ($coursePrereqCol !== null && $values["prerequisite_course_id"] !== "" && (int)$values["prerequisite_course_id"] === $course_id) {
             $error = "A course cannot be its own prerequisite.";
+        } elseif ($courseTeacherFkCol !== null && $teacherDeptFkCol !== null && $values["teacher_id"] !== "" && $values["dept_id"] !== "") {
+            $teacherMatchesDept = false;
+            foreach ($teachers as $teacher) {
+                if ((string)($teacher["teacher_id"] ?? "") === $values["teacher_id"]) {
+                    $teacherMatchesDept = ((string)($teacher["dept_id"] ?? "") === $values["dept_id"]);
+                    break;
+                }
+            }
+            if (!$teacherMatchesDept) {
+                $error = "Please select a teacher from the chosen department.";
+            }
+        } elseif ($coursePrereqCol !== null && $values["prerequisite_course_id"] !== "") {
+            $prerequisiteMatchesDept = true;
+            if ($courseDeptFkCol !== null && $values["dept_id"] !== "") {
+                $prerequisiteMatchesDept = false;
+                foreach ($prerequisiteCourses as $pr) {
+                    if ((string)($pr["course_id"] ?? "") === $values["prerequisite_course_id"]) {
+                        $prerequisiteMatchesDept = ((string)($pr["dept_id"] ?? "") === $values["dept_id"]);
+                        break;
+                    }
+                }
+            }
+            if (!$prerequisiteMatchesDept) {
+                $error = "Please select a prerequisite course from the chosen department.";
+            }
         } else {
             $sets = [];
             $params = [];
@@ -272,12 +314,21 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $up = sqlsrv_query($conn, $updateSql, $params);
 
             if ($up) {
+                $courseLabel = trim((string)($values["course_name"] ?? ""));
+                $courseCode = trim((string)($values["course_code"] ?? ""));
+                if ($courseCode !== "" && $courseLabel !== "") {
+                    $courseLabel = $courseCode . " - " . $courseLabel;
+                }
+                $courseMessage = $courseLabel !== ""
+                    ? "Course '" . $courseLabel . "' was updated."
+                    : "Course details were updated.";
+                umsLogActivity($conn, "course_update", $courseMessage);
+                umsSetFlash("courses", "success", "Course updated successfully.");
                 header("Location: list.php");
                 exit();
             }
 
-            $errs = sqlsrv_errors();
-            $error = "Update failed: " . ($errs ? $errs[0]["message"] : "Unknown SQL error");
+            $error = umsFriendlyDbMessage("update", "course", sqlsrv_errors(SQLSRV_ERR_ERRORS));
         }
     }
 }
@@ -429,10 +480,14 @@ $name = $_SESSION["name"] ?? "User";
             <div class="field full">
               <label>Assign Teacher</label>
               <?php if ($courseTeacherFkCol !== null && count($teachers) > 0): ?>
-                <select name="teacher_id">
+                <select id="teacher_id" name="teacher_id">
                   <option value="">Select Teacher</option>
                   <?php foreach ($teachers as $t): ?>
-                    <option value="<?php echo (int)$t["teacher_id"]; ?>" <?php echo ((string)$values["teacher_id"] === (string)$t["teacher_id"]) ? "selected" : ""; ?>>
+                    <option
+                      value="<?php echo (int)$t["teacher_id"]; ?>"
+                      data-dept-id="<?php echo h((string)($t["dept_id"] ?? "")); ?>"
+                      <?php echo ((string)$values["teacher_id"] === (string)$t["teacher_id"]) ? "selected" : ""; ?>
+                    >
                       <?php echo h($t["teacher_name"]); ?>
                     </option>
                   <?php endforeach; ?>
@@ -446,11 +501,15 @@ $name = $_SESSION["name"] ?? "User";
             <?php if ($coursePrereqCol !== null): ?>
               <div class="field full">
                 <label>Prerequisite Course</label>
-                <select name="prerequisite_course_id">
+                <select id="prerequisite_course_id" name="prerequisite_course_id">
                   <option value="">No prerequisite</option>
                   <?php foreach ($prerequisiteCourses as $pr): ?>
                     <?php $prId = (int)($pr["course_id"] ?? 0); ?>
-                    <option value="<?php echo $prId; ?>" <?php echo ((string)$values["prerequisite_course_id"] === (string)$prId) ? "selected" : ""; ?>>
+                    <option
+                      value="<?php echo $prId; ?>"
+                      data-dept-id="<?php echo h((string)($pr["dept_id"] ?? "")); ?>"
+                      <?php echo ((string)$values["prerequisite_course_id"] === (string)$prId) ? "selected" : ""; ?>
+                    >
                       <?php echo h(($pr["course_code"] ?? "") . " - " . ($pr["course_name"] ?? "")); ?>
                     </option>
                   <?php endforeach; ?>
@@ -475,5 +534,66 @@ $name = $_SESSION["name"] ?? "User";
     </div>
   </main>
 </div>
+<script>
+  (function () {
+    var departmentEl = document.querySelector('select[name="dept_id"]');
+    var teacherEl = document.getElementById("teacher_id");
+    var prerequisiteEl = document.getElementById("prerequisite_course_id");
+
+    function findOptionByValue(selectEl, value) {
+      if (!selectEl || value === "") return null;
+      for (var i = 0; i < selectEl.options.length; i++) {
+        if (String(selectEl.options[i].value || "") === value) {
+          return selectEl.options[i];
+        }
+      }
+      return null;
+    }
+
+    function filterSelect(selectEl, emptyLabel, keepAllWhenNoDept) {
+      if (!selectEl) return;
+
+      var selectedDept = departmentEl ? String(departmentEl.value || "") : "";
+      var currentValue = String(selectEl.value || "");
+      var hasVisibleOption = false;
+
+      Array.prototype.slice.call(selectEl.options).forEach(function (option, index) {
+        if (index === 0) return;
+
+        var optionDept = String(option.getAttribute("data-dept-id") || "");
+        var shouldShow = selectedDept === ""
+          ? !!keepAllWhenNoDept
+          : optionDept === selectedDept;
+
+        option.hidden = !shouldShow;
+        option.disabled = !shouldShow;
+
+        if (shouldShow) {
+          hasVisibleOption = true;
+        }
+      });
+
+      selectEl.disabled = selectedDept === "" ? !keepAllWhenNoDept : !hasVisibleOption;
+      selectEl.options[0].text = emptyLabel;
+
+      if (currentValue !== "") {
+        var selectedOption = findOptionByValue(selectEl, currentValue);
+        if (!selectedOption || selectedOption.hidden || selectedOption.disabled) {
+          selectEl.value = "";
+        }
+      }
+    }
+
+    function refreshDependentFilters() {
+      filterSelect(teacherEl, "Select Teacher", false);
+      filterSelect(prerequisiteEl, "No prerequisite", true);
+    }
+
+    if (departmentEl) {
+      departmentEl.addEventListener("change", refreshDependentFilters);
+      refreshDependentFilters();
+    }
+  })();
+</script>
 </body>
 </html>

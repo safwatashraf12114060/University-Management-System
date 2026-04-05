@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
+require_once __DIR__ . "/../partials/activity_log.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -68,6 +70,14 @@ foreach (["course_code", "code"] as $c) {
     }
 }
 
+$courseDeptFkCol = null;
+foreach (["dept_id", "department_id"] as $c) {
+    if (colExists($conn, $courseTable, $c)) {
+        $courseDeptFkCol = $c;
+        break;
+    }
+}
+
 $creditCol = "credit_hours";
 if (colExists($conn, $courseTable, "credits")) $creditCol = "credits";
 if (colExists($conn, $courseTable, "credit")) $creditCol = "credit";
@@ -92,8 +102,8 @@ $studentSemester = trim($_GET["student_semester"] ?? "");
 $departmentId = trim($_GET["department_id"] ?? "");
 $courseId = trim($_GET["course_id"] ?? "");
 $page = max(1, (int)($_GET["page"] ?? 1));
-$perPage = (int)($_GET["per_page"] ?? 10);
-if (!in_array($perPage, [5, 10, 20, 50], true)) $perPage = 10;
+$perPage = (int)($_GET["per_page"] ?? 5);
+if (!in_array($perPage, [5, 10, 20, 50], true)) $perPage = 5;
 
 $success = (int)($_GET["success"] ?? 0);
 $errorMsg = "";
@@ -111,14 +121,44 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && ($_POST["action"] ?? "") === "delet
         if ($enrollmentId <= 0) {
             $errorMsg = "Invalid enrollment id.";
         } else {
+            $activityMessage = "";
+            $activityLookupSql = "
+                SELECT TOP 1
+                    s.$studentNameCol AS student_name,
+                    " . ($courseCodeCol ? "c.$courseCodeCol" : "CONVERT(VARCHAR(50), c.course_id)") . " AS course_code,
+                    c.$courseNameCol AS course_name
+                FROM $enrollTable e
+                JOIN $studentTable s ON s.student_id = e.student_id
+                JOIN $courseTable c ON c.course_id = e.course_id
+                WHERE e.enrollment_id = ?
+            ";
+            $activityLookupStmt = sqlsrv_query($conn, $activityLookupSql, [$enrollmentId]);
+            if ($activityLookupStmt !== false) {
+                $activityRow = sqlsrv_fetch_array($activityLookupStmt, SQLSRV_FETCH_ASSOC);
+                sqlsrv_free_stmt($activityLookupStmt);
+                $studentLabel = trim((string)($activityRow["student_name"] ?? ""));
+                $courseCode = trim((string)($activityRow["course_code"] ?? ""));
+                $courseName = trim((string)($activityRow["course_name"] ?? ""));
+                $courseLabel = trim(($courseCode !== "" ? $courseCode . " - " : "") . $courseName);
+                if ($studentLabel !== "" || $courseLabel !== "") {
+                    $activityMessage = "Enrollment for " . ($studentLabel !== "" ? "'" . $studentLabel . "'" : "a student")
+                        . ($courseLabel !== "" ? " in '" . $courseLabel . "'" : "")
+                        . " was deleted.";
+                }
+            }
+
             $delSql = "DELETE FROM $enrollTable WHERE enrollment_id = ?";
             $delStmt = sqlsrv_query($conn, $delSql, [$enrollmentId]);
             if ($delStmt !== false) {
+                if ($activityMessage === "") {
+                    $activityMessage = "Enrollment ID " . $enrollmentId . " was deleted.";
+                }
+                umsLogActivity($conn, "enrollment_delete", $activityMessage);
                 $redirect = "list.php" . buildQuery(["success" => 2]);
                 header("Location: " . $redirect);
                 exit();
             } else {
-                $errorMsg = "Delete failed.";
+                $errorMsg = umsFriendlyDbMessage("delete", "enrollment", sqlsrv_errors(SQLSRV_ERR_ERRORS));
             }
         }
     }
@@ -180,20 +220,40 @@ if ($deptFilterStmt !== false) {
 }
 
 $coursesForFilter = [];
+$courseFilterParams = [];
 $courseFilterSql = "
     SELECT
         c.course_id,
         " . ($courseCodeCol ? "c.$courseCodeCol" : "CONVERT(VARCHAR(50), c.course_id)") . " AS course_code,
         c.$courseNameCol AS course_name
     FROM $courseTable c
+";
+if ($departmentId !== "" && $courseDeptFkCol !== null) {
+    $courseFilterSql .= " WHERE c.$courseDeptFkCol = ?";
+    $courseFilterParams[] = (int)$departmentId;
+}
+$courseFilterSql .= "
     ORDER BY " . ($courseCodeCol ? "c.$courseCodeCol ASC," : "") . " c.$courseNameCol ASC
 ";
-$courseFilterStmt = sqlsrv_query($conn, $courseFilterSql);
+$courseFilterStmt = sqlsrv_query($conn, $courseFilterSql, $courseFilterParams);
 if ($courseFilterStmt !== false) {
     while ($r = sqlsrv_fetch_array($courseFilterStmt, SQLSRV_FETCH_ASSOC)) {
         $coursesForFilter[] = $r;
     }
     sqlsrv_free_stmt($courseFilterStmt);
+}
+
+if ($departmentId !== "" && $courseId !== "") {
+    $courseMatchesDepartment = false;
+    foreach ($coursesForFilter as $course) {
+        if ((string)($course["course_id"] ?? "") === $courseId) {
+            $courseMatchesDepartment = true;
+            break;
+        }
+    }
+    if (!$courseMatchesDepartment) {
+        $courseId = "";
+    }
 }
 
 $countSql = "
@@ -271,72 +331,94 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
     }
     .enroll-toolbar{
       display:flex;
-      flex-wrap:nowrap;
-      gap:12px;
+      flex-wrap:wrap;
+      gap:8px;
       align-items:center;
       margin-bottom:16px;
-      overflow-x:auto;
-      padding-bottom:4px;
-      scrollbar-width:thin;
+      width:100%;
     }
     .enroll-toolbar .search,
     .enroll-toolbar select,
     .enroll-toolbar input,
     .enroll-toolbar .btn{
-      height:44px;
-      flex:0 0 auto;
+      height:46px;
     }
     .enroll-toolbar .search{
-      width:170px;
-      min-width:170px;
-      transition:width .22s ease,min-width .22s ease,box-shadow .22s ease;
+      flex:1 1 420px;
+      min-width:320px;
+      max-width:none;
+      margin-bottom:0;
     }
-    .enroll-toolbar input,
+    .enroll-toolbar > input,
     .enroll-toolbar select{
-      width:118px;
-      min-width:118px;
+      flex:0 0 auto;
       padding:0 12px;
-      border:1px solid #dbe1ea;
+      border:1px solid var(--border);
       border-radius:12px;
-      background:#fff;
+      background:var(--card);
       color:var(--text);
       outline:none;
       font:inherit;
-      transition:width .22s ease,min-width .22s ease,box-shadow .22s ease,border-color .22s ease;
     }
     .enroll-toolbar .btn{
       white-space:nowrap;
       justify-content:center;
+      flex:0 0 112px;
+      width:112px;
     }
-    .enroll-toolbar .search:hover,
-    .enroll-toolbar .search:focus-within{
-      width:280px;
-      min-width:280px;
+    .enroll-toolbar select[name="department_id"]{
+      width:170px;
     }
-    .enroll-toolbar input:hover,
-    .enroll-toolbar input:focus,
+    .enroll-toolbar select[name="course_id"]{
+      width:170px;
+    }
+    .enroll-toolbar select[name="student_semester"]{
+      width:150px;
+    }
+    .enroll-toolbar > input:hover,
+    .enroll-toolbar > input:focus,
     .enroll-toolbar select:hover,
     .enroll-toolbar select:focus{
-      width:210px;
-      min-width:210px;
       border-color:#94a3b8;
       box-shadow:0 10px 24px rgba(15,23,42,.10);
     }
     .enroll-toolbar select[name="per_page"]{
-      width:84px;
-      min-width:84px;
+      width:96px;
+      min-width:96px;
     }
-    .enroll-toolbar .btn{
-      min-width:92px;
+    .enroll-toolbar select[name="term"],
+    .enroll-toolbar input[name="year"]{
+      min-width:96px;
+      width:96px;
+    }
+    .live-results table thead th,
+    .live-results table tbody td{
+      text-align:center;
+      vertical-align:middle;
+    }
+    .live-results .actions{
+      justify-content:center;
     }
     @media (max-width: 900px){
       .enroll-toolbar{
-        gap:10px;
+        gap:8px;
+      }
+    }
+    @media (max-width: 700px){
+      .enroll-toolbar{
+        flex-direction:column;
+        align-items:stretch;
+      }
+      .enroll-toolbar .search,
+      .enroll-toolbar > input,
+      .enroll-toolbar select,
+      .enroll-toolbar .btn{
+        width:100%;
       }
     }
   </style>
 </head>
-<body>
+<body class="list-page">
 <div class="layout">
   <?php renderSidebar("enrollments", "../"); ?>
 
@@ -347,7 +429,7 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
       <div class="page-head">
         <h1>Enrollments</h1>
         <div class="page-actions">
-          <a class="btn btn-primary" href="<?php echo h($pdfPreviewUrl); ?>" title="View PDF">
+          <a class="btn" href="<?php echo h($pdfPreviewUrl); ?>" title="View PDF">
             View PDF
           </a>
           <a class="btn btn-primary" href="add.php">
@@ -375,28 +457,8 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
             <input type="text" name="q" value="<?php echo h($q); ?>" placeholder="Search enrollments..." />
           </div>
 
-          <select name="term">
-            <option value=""><?php echo $semesterIsNumeric ? "Semester" : "Term (Spring/Fall)"; ?></option>
-            <?php foreach (($semesterIsNumeric ? range(1, 8) : ["Spring", "Summer", "Fall"]) as $t): ?>
-              <option value="<?php echo h($t); ?>" <?php echo $term === $t ? "selected" : ""; ?>>
-                <?php echo h($t); ?>
-              </option>
-            <?php endforeach; ?>
-          </select>
-
-          <input type="number" name="year" value="<?php echo h($year); ?>" placeholder="Year (e.g., 2025)" min="2000" max="2100" <?php echo $hasYear ? "" : "disabled"; ?> />
-
-          <select name="student_semester">
-            <option value="">Student Semester</option>
-            <?php for ($i = 1; $i <= 8; $i++): ?>
-              <option value="<?php echo $i; ?>" <?php echo (string)$studentSemester === (string)$i ? "selected" : ""; ?>>
-                <?php echo $i; ?>
-              </option>
-            <?php endfor; ?>
-          </select>
-
-          <select name="department_id">
-            <option value="">All Departments</option>
+          <select name="department_id" onchange="this.form.submit()">
+            <option value="">Departments</option>
             <?php foreach ($departments as $dept): ?>
               <?php $did = (int)($dept["dept_id"] ?? 0); ?>
               <option value="<?php echo $did; ?>" <?php echo (string)$departmentId === (string)$did ? "selected" : ""; ?>>
@@ -405,8 +467,8 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
             <?php endforeach; ?>
           </select>
 
-          <select name="course_id">
-            <option value="">All Courses</option>
+          <select name="course_id" onchange="this.form.submit()">
+            <option value="">Courses</option>
             <?php foreach ($coursesForFilter as $course): ?>
               <?php
                 $filterCourseId = (int)($course["course_id"] ?? 0);
@@ -419,6 +481,26 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
             <?php endforeach; ?>
           </select>
 
+          <select name="student_semester" onchange="this.form.submit()">
+            <option value="">Semester</option>
+            <?php for ($i = 1; $i <= 8; $i++): ?>
+              <option value="<?php echo $i; ?>" <?php echo (string)$studentSemester === (string)$i ? "selected" : ""; ?>>
+                <?php echo $i; ?>
+              </option>
+            <?php endfor; ?>
+          </select>
+
+          <select name="term">
+            <option value="">Term</option>
+            <?php foreach (($semesterIsNumeric ? range(1, 8) : ["Spring", "Summer", "Fall"]) as $t): ?>
+              <option value="<?php echo h($t); ?>" <?php echo $term === $t ? "selected" : ""; ?>>
+                <?php echo h($t); ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+
+          <input type="number" name="year" value="<?php echo h($year); ?>" placeholder="Year" min="2000" max="2100" <?php echo $hasYear ? "" : "disabled"; ?> />
+
           <select name="per_page">
             <option value="5" <?php echo $perPage===5?'selected':''; ?>>5</option>
             <option value="10" <?php echo $perPage===10?'selected':''; ?>>10</option>
@@ -430,6 +512,7 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
           <a class="btn" href="list.php">Reset</a>
         </form>
 
+        <div class="live-results">
         <div style="overflow:auto;">
           <table>
             <thead>
@@ -443,7 +526,7 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
                 <th>Term</th>
                 <th>Year</th>
                 <th>Student Semester</th>
-                <th style="text-align:right;">Actions</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -463,7 +546,7 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
                     <td><?php echo h($r["term"] ?? ""); ?></td>
                     <td><?php echo h($r["year"] ?? ""); ?></td>
                     <td><?php echo h($r["student_semester"] ?? ""); ?></td>
-                    <td style="text-align:right;">
+                    <td>
                       <div class="actions">
                         <form method="post" action="list.php<?php echo h(buildQuery()); ?>" onsubmit="return confirm('Delete this enrollment?');" style="margin:0;">
                           <input type="hidden" name="action" value="delete">
@@ -517,6 +600,7 @@ $pdfPreviewUrl = "pdf_preview.php" . buildQuery(["page" => null, "success" => nu
               Next
             </a>
           </div>
+        </div>
         </div>
 
       </div>

@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/partials/layout.php";
+require_once __DIR__ . "/partials/activity_log.php";
 
 // Cache prevention
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
@@ -17,6 +18,10 @@ if (!isset($_SESSION["user_id"])) {
 
 $name = $_SESSION["name"] ?? "User";
 $email = $_SESSION["email"] ?? "";
+
+function h($v) {
+    return htmlspecialchars((string)($v ?? ""), ENT_QUOTES, "UTF-8");
+}
 
 function tableExists($conn, $schemaDotTable) {
     $stmt = sqlsrv_query($conn, "SELECT OBJECT_ID(?) AS oid", [$schemaDotTable]);
@@ -49,12 +54,15 @@ function resolveTable($conn, $baseName) {
 $studentTable = resolveTable($conn, "STUDENT");
 $teacherTable = resolveTable($conn, "TEACHER");
 $courseTable = resolveTable($conn, "COURSE");
+$departmentTable = resolveTable($conn, "DEPARTMENT");
 $enrollmentTable = resolveTable($conn, "ENROLLMENT");
 
 $totalStudents = countRows($conn, $studentTable);
 $totalTeachers = countRows($conn, $teacherTable);
 $totalCourses = countRows($conn, $courseTable);
+$totalDepartments = countRows($conn, $departmentTable);
 $totalEnrollments = countRows($conn, $enrollmentTable);
+$activities = umsFetchRecentActivities($conn, 5);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -84,7 +92,7 @@ $totalEnrollments = countRows($conn, $enrollmentTable);
     })();
   </script>
 </head>
-<body>
+<body class="dashboard-page">
 
 <div class="layout">
   <?php renderSidebar("dashboard", ""); ?>
@@ -120,6 +128,19 @@ $totalEnrollments = countRows($conn, $enrollmentTable);
         </div>
 
         <div class="card">
+          <div class="icon" aria-hidden="true" style="background: rgba(139,92,246,0.14);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M3 8.5 12 4l9 4.5" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M5 10v6.5C5 17.9 8.1 20 12 20s7-2.1 7-3.5V10" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M9 12.5v2.5" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"/>
+              <path d="M15 12.5v2.5" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="label">Total Departments</div>
+          <div class="value"><?php echo number_format($totalDepartments); ?></div>
+        </div>
+
+        <div class="card">
           <div class="icon" aria-hidden="true" style="background: rgba(245,158,11,0.14);">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
@@ -132,12 +153,12 @@ $totalEnrollments = countRows($conn, $enrollmentTable);
         </div>
 
         <div class="card">
-          <div class="icon" aria-hidden="true" style="background: rgba(139,92,246,0.14);">
+          <div class="icon" aria-hidden="true" style="background: rgba(236,72,153,0.14);">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-              <rect x="6" y="3" width="12" height="18" rx="2" stroke="#8b5cf6" stroke-width="2"/>
-              <path d="M9 7h6" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"/>
-              <path d="M9 11h6" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"/>
-              <path d="M9 15h6" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"/>
+              <rect x="6" y="3" width="12" height="18" rx="2" stroke="#ec4899" stroke-width="2"/>
+              <path d="M9 7h6" stroke="#ec4899" stroke-width="2" stroke-linecap="round"/>
+              <path d="M9 11h6" stroke="#ec4899" stroke-width="2" stroke-linecap="round"/>
+              <path d="M9 15h6" stroke="#ec4899" stroke-width="2" stroke-linecap="round"/>
             </svg>
           </div>
           <div class="label">Total Enrollments</div>
@@ -148,37 +169,24 @@ $totalEnrollments = countRows($conn, $enrollmentTable);
       <section class="panel">
         <h2>Recent Activity</h2>
         <div class="activity">
-          <div class="activity-item">
-            <div class="left">
-              <div class="dot" style="background:#2f3cff;"></div>
-              <div class="activity-text">New student enrolled in Computer Science</div>
+          <?php if (count($activities) === 0): ?>
+            <div class="activity-item">
+              <div class="left">
+                <div class="dot"></div>
+                <div class="activity-text">No recent activity found.</div>
+              </div>
             </div>
-            <div class="time">2 hours ago</div>
-          </div>
-
-          <div class="activity-item">
-            <div class="left">
-              <div class="dot" style="background:#10b981;"></div>
-              <div class="activity-text">Course "Database Management" updated</div>
-            </div>
-            <div class="time">5 hours ago</div>
-          </div>
-
-          <div class="activity-item">
-            <div class="left">
-              <div class="dot" style="background:#f59e0b;"></div>
-              <div class="activity-text">Results published for Semester Fall 2025</div>
-            </div>
-            <div class="time">1 day ago</div>
-          </div>
-
-          <div class="activity-item">
-            <div class="left">
-              <div class="dot" style="background:#8b5cf6;"></div>
-              <div class="activity-text">New teacher added to Engineering Department</div>
-            </div>
-            <div class="time">2 days ago</div>
-          </div>
+          <?php else: ?>
+            <?php foreach ($activities as $activity): ?>
+              <div class="activity-item">
+                <div class="left">
+                  <div class="dot" style="background:<?php echo h(umsActivityDotColor($activity["activity_type"] ?? "")); ?>;"></div>
+                  <div class="activity-text"><?php echo h($activity["message"] ?? ""); ?></div>
+                </div>
+                <div class="time"><?php echo h(umsActivityTimeText($activity["created_at"] ?? "")); ?></div>
+              </div>
+            <?php endforeach; ?>
+          <?php endif; ?>
         </div>
       </section>
 

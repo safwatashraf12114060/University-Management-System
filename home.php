@@ -12,20 +12,22 @@ $name = $_SESSION["name"] ?? "User";
   <title>University Management System</title>
   <style>
     :root{
-      --bg: #f4f6fb;
+      --bg: linear-gradient(180deg, #f4f6fb 0%, #eef2ff 100%);
       --card: #ffffff;
       --text: #0f172a;
       --muted: #475569;
       --primary: #2f3cff;
       --border: #e5e7eb;
-      --shadow: 0 10px 25px rgba(0,0,0,0.08);
+      --shadow: 0 8px 22px rgba(0,0,0,0.06);
       --shadow2: 0 8px 22px rgba(0,0,0,0.06);
       --radius: 14px;
     }
     *{ box-sizing:border-box; }
     body{
       margin:0;
-      font-family: Arial, sans-serif;
+      font-family: "Times New Roman", Times, serif;
+      font-size:18px;
+      line-height:1.6;
       background: var(--bg);
       color: var(--text);
     }
@@ -35,9 +37,10 @@ $name = $_SESSION["name"] ?? "User";
       box-shadow: 0 4px 14px rgba(0,0,0,0.04);
     }
     .nav .wrap{
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 14px 18px;
+      width: 100%;
+      max-width: none;
+      margin: 0;
+      padding: 14px 32px;
       display:flex;
       align-items:center;
       justify-content:space-between;
@@ -49,7 +52,7 @@ $name = $_SESSION["name"] ?? "User";
       gap: 10px;
       font-weight: 800;
       letter-spacing: 0.2px;
-      font-size: 18px;
+      font-size: 20px;
       color: var(--text);
       text-decoration:none;
     }
@@ -59,13 +62,27 @@ $name = $_SESSION["name"] ?? "User";
       align-items:center;
       gap: 14px;
     }
-    .link{
+    .nav-btn{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding: 10px 16px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
       color: var(--text);
       text-decoration:none;
-      font-weight: 600;
-      opacity: .9;
+      font-weight: 700;
+      transition: 0.15s ease;
     }
-    .link:hover{ opacity: 1; }
+    .nav-btn:hover{ transform: translateY(-1px); background:#f8fafc; }
+    .nav-btn-active{
+      background: var(--primary);
+      border-color: var(--primary);
+      color:#fff;
+      box-shadow: 0 10px 18px rgba(47,60,255,0.18);
+    }
+    .nav-btn-active:hover{ background: var(--primary); }
 
     .btn{
       display:inline-flex;
@@ -94,21 +111,21 @@ $name = $_SESSION["name"] ?? "User";
     .btn-outline:hover{ transform: translateY(-1px); }
 
     .hero{
-      max-width: 1100px;
+      max-width: 1180px;
       margin: 0 auto;
-      padding: 70px 18px 24px;
+      padding: 70px 32px 24px;
       text-align:center;
     }
     .hero h1{
       margin: 0 0 12px;
-      font-size: 46px;
+      font-size: 52px;
       line-height: 1.05;
       letter-spacing: -0.8px;
     }
     .hero p{
       margin: 0 auto 26px;
       max-width: 740px;
-      font-size: 18px;
+      font-size: 20px;
       color: var(--muted);
     }
     .cta{
@@ -120,9 +137,9 @@ $name = $_SESSION["name"] ?? "User";
     }
 
     .features{
-      max-width: 1100px;
+      max-width: 1180px;
       margin: 0 auto;
-      padding: 28px 18px 70px;
+      padding: 28px 32px 70px;
       display:grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 22px;
@@ -147,13 +164,13 @@ $name = $_SESSION["name"] ?? "User";
     }
     .card h3{
       margin: 0 0 8px;
-      font-size: 18px;
+      font-size: 20px;
     }
     .card p{
       margin: 0;
       color: var(--muted);
       line-height: 1.5;
-      font-size: 14px;
+      font-size: 16px;
     }
 
     .welcome{
@@ -164,13 +181,16 @@ $name = $_SESSION["name"] ?? "User";
       background: rgba(15, 23, 42, 0.06);
       color: rgba(15, 23, 42, 0.75);
       font-weight: 700;
-      font-size: 13px;
+      font-size: 15px;
     }
 
     @media (max-width: 980px){
-      .hero h1{ font-size: 38px; }
+      .hero h1{ font-size: 44px; }
       .features{ grid-template-columns: 1fr; }
       .nav-actions{ gap: 10px; }
+      .nav .wrap,
+      .hero,
+      .features{ padding-left: 18px; padding-right: 18px; }
     }
   </style>
 </head>
@@ -187,13 +207,9 @@ $name = $_SESSION["name"] ?? "User";
       </a>
 
       <div class="nav-actions">
-        <?php if (!$isLoggedIn): ?>
-          <a class="link" href="login.php">Login</a>
-          <a class="btn btn-primary" href="register.php">Register</a>
-        <?php else: ?>
-          <a class="link" href="index.php">Dashboard</a>
-          <a class="btn btn-primary" href="logout.php">Logout</a>
-        <?php endif; ?>
+        <a class="nav-btn nav-btn-active" href="home.php">Home</a>
+        <a class="nav-btn" href="login.php">Login</a>
+        <a class="nav-btn" href="register.php">Register</a>
       </div>
     </div>
   </div>

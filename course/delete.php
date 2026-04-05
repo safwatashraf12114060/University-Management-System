@@ -1,6 +1,8 @@
 <?php
 session_start();
 require_once __DIR__ . "/../db.php";
+require_once __DIR__ . "/../partials/feedback.php";
+require_once __DIR__ . "/../partials/activity_log.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -30,7 +32,26 @@ if ($courseId <= 0) {
     exit();
 }
 
-sqlsrv_query($conn, "DELETE FROM $courseTable WHERE $courseIdCol = ?", [$courseId]);
+$courseLabel = umsFetchActivityEntityLabel(
+    $conn,
+    $courseTable,
+    $courseIdCol,
+    $courseId,
+    ["course_name", "title", "name", "course_code", "code"]
+);
+
+$stmt = sqlsrv_query($conn, "DELETE FROM $courseTable WHERE $courseIdCol = ?", [$courseId]);
+
+if ($stmt === false) {
+    umsSetFlash("courses", "error", umsFriendlyDbMessage("delete", "course", sqlsrv_errors(SQLSRV_ERR_ERRORS)));
+} else {
+    sqlsrv_free_stmt($stmt);
+    $courseMessage = $courseLabel !== ""
+        ? "Course '" . $courseLabel . "' was deleted."
+        : "Course ID " . $courseId . " was deleted.";
+    umsLogActivity($conn, "course_delete", $courseMessage);
+    umsSetFlash("courses", "success", "Course deleted successfully.");
+}
 
 header("Location: list.php");
 exit();
