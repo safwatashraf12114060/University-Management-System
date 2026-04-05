@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
+require_once __DIR__ . "/../partials/activity_log.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -187,12 +189,17 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $up = sqlsrv_query($conn, $sql, $params);
 
         if ($up) {
+            $studentLabel = trim((string)($values["student_name"] ?? ""));
+            $studentMessage = $studentLabel !== ""
+                ? "Student '" . $studentLabel . "' was updated."
+                : "Student details were updated.";
+            umsLogActivity($conn, "student_update", $studentMessage);
+            umsSetFlash("student_view", "success", "Student updated successfully.");
             header("Location: view.php?student_id=" . $student_id);
             exit();
         }
 
-        $errs = sqlsrv_errors();
-        $error = "Update failed: " . ($errs ? $errs[0]["message"] : "Unknown SQL error");
+        $error = umsFriendlyDbMessage("update", "student", sqlsrv_errors(SQLSRV_ERR_ERRORS));
     }
 }
 
@@ -238,6 +245,10 @@ $name = $_SESSION["name"] ?? "User";
       background:#fff;
       font:inherit;
       color:var(--text);
+    }
+    .field input,
+    .field select{
+      min-height:48px;
     }
     .field textarea{
       min-height:110px;

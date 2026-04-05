@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
+require_once __DIR__ . "/../partials/activity_log.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -24,7 +26,7 @@ function h($v) {
 }
 
 function addSqlsrvError($baseMsg, $debug) {
-    if (!$debug) return $baseMsg;
+    if (!$debug) return umsFriendlyDbMessage("create", "result", sqlsrv_errors(SQLSRV_ERR_ERRORS));
     $e = sqlsrv_errors();
     return $baseMsg . "\n" . print_r($e, true);
 }
@@ -224,6 +226,19 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                     if ($insSt === false) {
                         $error = addSqlsrvError("Insert failed.", $debug);
                     } else {
+                        $studentLabel = trim((string)($studentsByTerm[$termKey][$student_id]["student_name"] ?? ""));
+                        $courseCode = trim((string)($coursesByStudentTerm[$termKey][$student_id][$course_id]["course_code"] ?? ""));
+                        $courseName = trim((string)($coursesByStudentTerm[$termKey][$student_id][$course_id]["course_name"] ?? ""));
+                        $courseLabel = trim(($courseCode !== "" ? $courseCode . " - " : "") . $courseName);
+                        $resultMessage = "Result was added";
+                        if ($studentLabel !== "") {
+                            $resultMessage .= " for student '" . $studentLabel . "'";
+                        }
+                        if ($courseLabel !== "") {
+                            $resultMessage .= " in course '" . $courseLabel . "'";
+                        }
+                        $resultMessage .= ".";
+                        umsLogActivity($conn, "result_create", $resultMessage);
                         header("Location: list.php?success=1");
                         exit();
                     }
@@ -241,15 +256,63 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
   <title>Add Result</title>
   <link rel="stylesheet" href="../assets/app.css">
   <style>
-    .result-card{max-width:920px;}
-    .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
-    .full{grid-column:1 / -1;}
-    .alert-err{margin-bottom:14px;padding:12px 14px;border-radius:12px;background:#fee2e2;border:1px solid #fecaca;color:#991b1b;font-weight:800;white-space:pre-wrap;}
+    .form-card{
+      width:100%;
+    }
+    .form-grid{
+      display:grid;
+      grid-template-columns:repeat(2, 1fr);
+      gap:20px;
+    }
+    .field{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .field.full{
+      grid-column:1 / -1;
+    }
+    .field label{
+      font-size:13px;
+      font-weight:900;
+      color:var(--text);
+    }
+    .field input,
+    .field select{
+      width:100%;
+      padding:12px;
+      border:1px solid #d0d4e3;
+      border-radius:10px;
+      outline:none;
+      background:#fff;
+      font:inherit;
+      color:var(--text);
+    }
+    .field input:focus,
+    .field select:focus{
+      border-color:var(--primary);
+    }
     .marks-field input,
     .grade-field input{min-height:56px;font-size:16px;}
-    .scale{margin-top:14px;border:1px solid #c7d2fe;background:#eff6ff;border-radius:16px;padding:16px;}
+    .scale{border:1px solid #c7d2fe;background:#eff6ff;border-radius:16px;padding:16px;}
     .scale h3{margin:0 0 10px;font-size:18px;font-weight:900;}
     .scale-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;color:#0f172a;font-weight:800;}
+    .form-actions{
+      display:flex;
+      gap:12px;
+      align-items:center;
+      margin-top:18px;
+      flex-wrap:wrap;
+    }
+    .back-link{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      font-weight:900;
+      margin-bottom:14px;
+      text-decoration:none;
+      color:var(--text);
+    }
     @media (max-width:860px){
       .form-grid{grid-template-columns:1fr;}
       .scale-grid{grid-template-columns:repeat(2,1fr);}
@@ -273,12 +336,12 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         <div class="alert-err"><?php echo h($error); ?></div>
       <?php endif; ?>
 
-      <div class="card result-card">
+      <div class="card form-card">
         <form method="post" action="">
           <input type="hidden" name="csrf_token" value="<?php echo h($_SESSION["csrf_token"]); ?>">
 
           <div class="form-grid">
-            <div>
+            <div class="field">
               <label for="semester">Semester *</label>
               <select id="semester" name="semester" required>
                 <option value=""><?php echo $semesterIsNumeric ? "Select Semester" : "Select Term"; ?></option>
@@ -290,7 +353,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
               </select>
             </div>
 
-            <div>
+            <div class="field">
               <label for="year">Year <?php echo $hasEnrollYear ? "*" : ""; ?></label>
               <?php if ($hasEnrollYear): ?>
                 <select id="year" name="year" required>
@@ -306,31 +369,31 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
               <?php endif; ?>
             </div>
 
-            <div>
+            <div class="field">
               <label for="student_id">Student *</label>
               <select id="student_id" name="student_id" required disabled>
                 <option value="">Select semester and year first</option>
               </select>
             </div>
 
-            <div>
+            <div class="field">
               <label for="course_id">Course *</label>
               <select id="course_id" name="course_id" required disabled>
                 <option value="">Select student first</option>
               </select>
             </div>
 
-            <div class="full marks-field">
+            <div class="field full marks-field">
               <label for="marks">Total Marks (out of 100) *</label>
               <input id="marks" name="marks" type="number" min="0" max="100" step="0.01" placeholder="e.g., 85" value="<?php echo h($marks); ?>" required>
             </div>
 
-            <div class="full grade-field">
+            <div class="field full grade-field">
               <label for="grade">Grade (Auto-calculated)</label>
               <input id="grade" type="text" value="" placeholder="Grade will appear here" disabled>
             </div>
 
-            <div class="full scale">
+            <div class="field full scale">
               <h3>Grading Scale</h3>
               <div class="scale-grid">
                 <div>A: 90-100</div>
@@ -348,7 +411,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
           </div>
 
-          <div class="form-actions" style="margin-top:16px;">
+          <div class="form-actions">
             <button class="btn btn-primary" type="submit">Add Result</button>
             <a class="btn" href="list.php">Cancel</a>
           </div>

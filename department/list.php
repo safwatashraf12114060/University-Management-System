@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -36,10 +37,15 @@ foreach ($headCandidates as $c) {
 }
 
 $search = trim($_GET["q"] ?? "");
+$flash = umsPullFlash("departments");
+$errorMsg = (string)($_SESSION["dept_error"] ?? "");
+$okMsg = (string)($_SESSION["dept_success"] ?? "");
+unset($_SESSION["dept_error"], $_SESSION["dept_success"]);
 $page = (int)($_GET["page"] ?? 1);
 if ($page < 1) $page = 1;
 
-$perPage = 5;
+$perPage = (int)($_GET["per_page"] ?? 5);
+if (!in_array($perPage, [5, 10, 20, 50], true)) $perPage = 5;
 $offset = ($page - 1) * $perPage;
 
 $where = "1=1";
@@ -83,9 +89,10 @@ if ($stmt) {
     sqlsrv_free_stmt($stmt);
 }
 
-function pageUrl($p, $q) {
+function pageUrl($p, $q, $perPage) {
     $qs = [];
     if ($q !== "") $qs["q"] = $q;
+    if ($perPage !== 5) $qs["per_page"] = $perPage;
     $qs["page"] = $p;
     return "list.php?" . http_build_query($qs);
 }
@@ -100,7 +107,7 @@ $name = $_SESSION["name"] ?? "User";
   <title>Departments</title>
   <link rel="stylesheet" href="../assets/app.css">
 </head>
-<body>
+<body class="list-page">
 <div class="layout">
 
   <?php renderSidebar("departments", "../"); ?>
@@ -114,27 +121,54 @@ $name = $_SESSION["name"] ?? "User";
         <a class="btn btn-primary" href="add.php"><span style="font-size:18px;line-height:0;">＋</span> Add Department</a>
       </div>
 
+      <?php if ($flash): ?>
+        <div class="<?php echo $flash["type"] === "success" ? "alert-ok" : "alert-err"; ?>">
+          <?php echo htmlspecialchars((string)($flash["message"] ?? ""), ENT_QUOTES, "UTF-8"); ?>
+        </div>
+      <?php endif; ?>
+
+      <?php if ($okMsg !== ""): ?>
+        <div class="alert-ok"><?php echo htmlspecialchars($okMsg, ENT_QUOTES, "UTF-8"); ?></div>
+      <?php endif; ?>
+
+      <?php if ($errorMsg !== ""): ?>
+        <div class="alert-err"><?php echo htmlspecialchars($errorMsg, ENT_QUOTES, "UTF-8"); ?></div>
+      <?php endif; ?>
+
       <div class="card">
-        <form class="search" method="get" action="">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" stroke="#64748b" stroke-width="2"/>
-            <path d="M20 20l-3.5-3.5" stroke="#64748b" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-          <input type="text" name="q" value="<?php echo htmlspecialchars($search); ?>" placeholder="Search departments..." />
+        <form method="get" action="list.php" class="toolbar">
+          <div class="search" style="flex:1;min-width:260px;margin-bottom:0;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" stroke="#64748b" stroke-width="2"/>
+              <path d="M20 20l-3.5-3.5" stroke="#64748b" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <input type="text" name="q" value="<?php echo htmlspecialchars($search); ?>" placeholder="Search departments..." />
+          </div>
+
+          <select name="per_page" aria-label="Rows per page">
+            <option value="5" <?php echo $perPage === 5 ? "selected" : ""; ?>>5</option>
+            <option value="10" <?php echo $perPage === 10 ? "selected" : ""; ?>>10</option>
+            <option value="20" <?php echo $perPage === 20 ? "selected" : ""; ?>>20</option>
+            <option value="50" <?php echo $perPage === 50 ? "selected" : ""; ?>>50</option>
+          </select>
+
+          <button class="btn btn-primary" type="submit">Apply</button>
+          <a class="btn" href="list.php">Reset</a>
         </form>
 
+        <div class="live-results">
         <table>
           <thead>
             <tr>
-              <th style="width:130px;">Department Code</th>
-              <th style="width:280px;">Department Name</th>
-              <th style="width:170px;">Department Head</th>
-              <th style="width:150px; text-align:right;">Actions</th>
+              <th style="width:130px; text-align:center;">Department Code</th>
+              <th style="width:280px; text-align:center;">Department Name</th>
+              <th style="width:170px; text-align:center;">Department Head</th>
+              <th style="width:150px; text-align:center;">Actions</th>
             </tr>
           </thead>
           <tbody>
             <?php if (count($rows) === 0): ?>
-              <tr><td colspan="4" class="muted">No departments found.</td></tr>
+              <tr><td colspan="4" class="muted" style="text-align:center;">No departments found.</td></tr>
             <?php else: ?>
               <?php foreach ($rows as $d): ?>
                 <?php
@@ -143,11 +177,11 @@ $name = $_SESSION["name"] ?? "User";
                   $head = (string)($d["dept_head"] ?? "—");
                 ?>
                 <tr>
-                  <td><?php echo htmlspecialchars($code); ?></td>
-                  <td><?php echo htmlspecialchars((string)$d["name"]); ?></td>
-                  <td><?php echo htmlspecialchars($head); ?></td>
-                  <td style="text-align:right;">
-                    <div class="actions">
+                  <td style="text-align:center; vertical-align:middle;"><?php echo htmlspecialchars($code); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo htmlspecialchars((string)$d["name"]); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo htmlspecialchars($head); ?></td>
+                  <td style="text-align:center; vertical-align:middle;">
+                    <div class="actions" style="justify-content:center;">
                       <a class="icon-btn icon-edit" href="edit.php?dept_id=<?php echo $id; ?>" title="Edit">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                           <path d="M12 20h9" stroke-width="2" stroke-linecap="round"/>
@@ -175,16 +209,17 @@ $name = $_SESSION["name"] ?? "User";
         <div class="footer">
           <div class="muted">Showing <?php echo min($perPage, max(0, $totalRows - $offset)); ?> of <?php echo $totalRows; ?> departments</div>
           <div class="pager">
-            <a href="<?php echo htmlspecialchars(pageUrl(max(1, $page - 1), $search)); ?>">Previous</a>
+            <a href="<?php echo htmlspecialchars(pageUrl(max(1, $page - 1), $search, $perPage)); ?>">Previous</a>
             <?php
               $start = max(1, $page - 2);
               $end = min($totalPages, $page + 2);
               for ($p = $start; $p <= $end; $p++):
             ?>
-              <a class="<?php echo $p === $page ? "active" : ""; ?>" href="<?php echo htmlspecialchars(pageUrl($p, $search)); ?>"><?php echo $p; ?></a>
+              <a class="<?php echo $p === $page ? "active" : ""; ?>" href="<?php echo htmlspecialchars(pageUrl($p, $search, $perPage)); ?>"><?php echo $p; ?></a>
             <?php endfor; ?>
-            <a href="<?php echo htmlspecialchars(pageUrl(min($totalPages, $page + 1), $search)); ?>">Next</a>
+            <a href="<?php echo htmlspecialchars(pageUrl(min($totalPages, $page + 1), $search, $perPage)); ?>">Next</a>
           </div>
+        </div>
         </div>
 
       </div>

@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/activity_log.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -436,6 +437,12 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                             if ($allInserted) {
                                 sqlsrv_commit($conn);
+                                $studentLabel = trim((string)($selectedStudent["student_name"] ?? ""));
+                                $courseCount = count($courseIds);
+                                $enrollmentMessage = $studentLabel !== ""
+                                    ? $courseCount . " enrollment(s) were created for student '" . $studentLabel . "'."
+                                    : $courseCount . " enrollment(s) were created.";
+                                umsLogActivity($conn, "enrollment_create", $enrollmentMessage);
                                 header("Location: list.php?success=1");
                                 exit();
                             }

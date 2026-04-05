@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
+require_once __DIR__ . "/../partials/activity_log.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -80,10 +82,15 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $st = sqlsrv_query($conn, $sql, $params);
 
         if ($st === false) {
-            $errs = sqlsrv_errors();
-            $error = "Insert failed: " . ($errs ? $errs[0]["message"] : "Unknown SQL error");
+            $error = umsFriendlyDbMessage("create", "department", sqlsrv_errors(SQLSRV_ERR_ERRORS));
         } else {
             sqlsrv_free_stmt($st);
+            $departmentLabel = trim((string)($values["dept_name"] ?? ""));
+            $departmentMessage = $departmentLabel !== ""
+                ? "Department '" . $departmentLabel . "' was added."
+                : "A new department was added.";
+            umsLogActivity($conn, "department_create", $departmentMessage);
+            umsSetFlash("departments", "success", "Department added successfully.");
             header("Location: list.php");
             exit();
         }

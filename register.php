@@ -61,31 +61,39 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
   <title>Register</title>
   <style>
     :root{
-      --bg:#f4f6fb;
+      --bg:linear-gradient(180deg, #f4f6fb 0%, #eef2ff 100%);
       --card:#ffffff;
       --text:#0f172a;
       --muted:#475569;
       --primary:#2f3cff;
       --border:#e5e7eb;
-      --shadow:0 10px 25px rgba(0,0,0,0.08);
+      --shadow:0 8px 22px rgba(0,0,0,0.06);
       --radius:14px;
     }
     *{box-sizing:border-box;}
     body{
       margin:0;
-      font-family: Arial, sans-serif;
+      font-family: "Times New Roman", Times, serif;
+      font-size:18px;
+      line-height:1.6;
       background:var(--bg);
       color:var(--text);
+      min-height:100vh;
+      display:flex;
+      flex-direction:column;
+      overflow:hidden;
     }
     .nav{
       background:var(--card);
       border-bottom:1px solid var(--border);
       box-shadow:0 4px 14px rgba(0,0,0,0.04);
+      flex:0 0 auto;
     }
     .nav .wrap{
-      max-width:1100px;
-      margin:0 auto;
-      padding:14px 18px;
+      width:100%;
+      max-width:none;
+      margin:0;
+      padding:10px 32px;
       display:flex;
       align-items:center;
       justify-content:space-between;
@@ -97,7 +105,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
       gap:10px;
       font-weight:800;
       letter-spacing:.2px;
-      font-size:18px;
+      font-size:20px;
       color:var(--text);
       text-decoration:none;
     }
@@ -107,13 +115,27 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
       align-items:center;
       gap:14px;
     }
-    .link{
+    .nav-btn{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:10px 16px;
+      border-radius:10px;
+      border:1px solid var(--border);
+      background:#fff;
       color:var(--text);
       text-decoration:none;
-      font-weight:600;
-      opacity:.9;
+      font-weight:700;
+      transition:.15s ease;
     }
-    .link:hover{opacity:1;}
+    .nav-btn:hover{transform:translateY(-1px);background:#f8fafc;}
+    .nav-btn-active{
+      background:var(--primary);
+      border-color:var(--primary);
+      color:#fff;
+      box-shadow:0 10px 18px rgba(47,60,255,0.18);
+    }
+    .nav-btn-active:hover{background:var(--primary);}
     .btn{
       display:inline-flex;
       align-items:center;
@@ -135,11 +157,12 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     .btn-primary:hover{filter:brightness(.98);transform:translateY(-1px);}
 
     .center{
-      min-height:calc(100vh - 60px);
+      flex:1;
+      min-height:0;
       display:flex;
       align-items:center;
       justify-content:center;
-      padding:30px 18px;
+      padding:8px 32px 10px;
     }
     .card{
       width:520px;
@@ -148,39 +171,39 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
       border:1px solid var(--border);
       border-radius:var(--radius);
       box-shadow:var(--shadow);
-      padding:28px;
+      padding:22px 24px;
     }
     .icon{
-      width:54px;
-      height:54px;
-      border-radius:16px;
+      width:46px;
+      height:46px;
+      border-radius:14px;
       background:rgba(47,60,255,0.10);
       display:flex;
       align-items:center;
       justify-content:center;
-      margin:0 auto 10px;
+      margin:0 auto 6px;
     }
     h2{
-      margin:8px 0 6px;
+      margin:4px 0;
       text-align:center;
-      font-size:26px;
+      font-size:30px;
       letter-spacing:-0.2px;
     }
     .sub{
       text-align:center;
       color:var(--muted);
-      margin:0 0 18px;
+      margin:0 0 12px;
     }
     label{
       display:block;
-      margin:12px 0 6px;
-      font-size:14px;
+      margin:10px 0 5px;
+      font-size:16px;
       color:var(--text);
       font-weight:700;
     }
     input{
       width:100%;
-      padding:12px 12px;
+      padding:10px 12px;
       border:1px solid #d0d4e3;
       border-radius:10px;
       outline:none;
@@ -189,8 +212,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     input:focus{border-color:var(--primary);}
     .btn-full{
       width:100%;
-      margin-top:16px;
-      padding:12px 14px;
+      margin-top:12px;
+      padding:11px 14px;
       border-radius:10px;
       border:0;
       background:var(--primary);
@@ -202,25 +225,47 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     .btn-full:hover{filter:brightness(.98);transform:translateY(-1px);}
 
     .alert{
-      margin:0 0 12px;
-      padding:10px 12px;
-      border-radius:10px;
+      margin:0 0 10px;
+      padding:8px 10px;
+      border-radius:8px;
       background:#ffe8e8;
       border:1px solid #ffb3b3;
       color:#8a0000;
       font-weight:700;
-      font-size:14px;
+      font-size:18px;
+      line-height:1.4;
+      transition:opacity .25s ease, transform .25s ease, max-height .25s ease, margin .25s ease, padding .25s ease;
+    }
+    .flash-hide{
+      opacity:0;
+      transform:translateY(-6px);
+      max-height:0;
+      margin:0;
+      padding-top:0;
+      padding-bottom:0;
+      overflow:hidden;
+      pointer-events:none;
     }
     .footer-link{
       text-align:center;
-      margin-top:16px;
+      margin-top:10px;
       color:var(--muted);
-      font-size:14px;
+      font-size:16px;
     }
     .footer-link a{
       color:var(--primary);
       text-decoration:none;
       font-weight:800;
+    }
+    @media (max-width:980px){
+      .nav .wrap,
+      .center{ padding-left:18px; padding-right:18px; }
+    }
+    @media (max-height:900px){
+      .card{
+        transform:scale(0.92);
+        transform-origin:top center;
+      }
     }
   </style>
 </head>
@@ -237,8 +282,9 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
       </a>
 
       <div class="nav-actions">
-        <a class="link" href="login.php">Login</a>
-        <a class="btn btn-primary" href="register.php">Register</a>
+        <a class="nav-btn" href="home.php">Home</a>
+        <a class="nav-btn" href="login.php">Login</a>
+        <a class="nav-btn nav-btn-active" href="register.php">Register</a>
       </div>
     </div>
   </div>
@@ -280,6 +326,21 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
       </div>
     </div>
   </div>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      document.querySelectorAll(".alert").forEach(function (messageEl) {
+        window.setTimeout(function () {
+          messageEl.classList.add("flash-hide");
+          window.setTimeout(function () {
+            if (messageEl.parentNode) {
+              messageEl.parentNode.removeChild(messageEl);
+            }
+          }, 300);
+        }, 5000);
+      });
+    });
+  </script>
 
 </body>
 </html>

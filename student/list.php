@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -46,10 +47,12 @@ $hasRegistrationNo = colExists($conn, "dbo.$studentTable", "registration_no") ||
 $search = trim($_GET["q"] ?? "");
 $deptFilter = trim($_GET["dept_id"] ?? "");
 $semesterFilter = trim($_GET["semester"] ?? "");
+$flash = umsPullFlash("students");
 $page = (int)($_GET["page"] ?? 1);
 if ($page < 1) $page = 1;
 
-$perPage = 5;
+$perPage = (int)($_GET["per_page"] ?? 5);
+if (!in_array($perPage, [5, 10, 20, 50], true)) $perPage = 5;
 $offset = ($page - 1) * $perPage;
 
 /* department options load */
@@ -162,12 +165,13 @@ function studentLabel($row, $hasStudentCode, $hasRegistrationNo) {
     return "S" . str_pad((string)$id, 7, "0", STR_PAD_LEFT);
 }
 
-function pageUrl($p, $q, $deptId, $semester) {
+function pageUrl($p, $q, $deptId, $semester, $perPage) {
     $qs = [];
 
     if ($q !== "") $qs["q"] = $q;
     if ($deptId !== "") $qs["dept_id"] = $deptId;
     if ($semester !== "") $qs["semester"] = $semester;
+    if ($perPage !== 5) $qs["per_page"] = $perPage;
 
     $qs["page"] = $p;
 
@@ -184,7 +188,7 @@ $name = $_SESSION["name"] ?? "User";
   <title>Students</title>
   <link rel="stylesheet" href="../assets/app.css">
 </head>
-<body>
+<body class="list-page">
 <div class="layout">
 
   <?php renderSidebar("students", "../"); ?>
@@ -201,9 +205,15 @@ $name = $_SESSION["name"] ?? "User";
         </a>
       </div>
 
+      <?php if ($flash): ?>
+        <div class="<?php echo $flash["type"] === "success" ? "alert-ok" : "alert-err"; ?>">
+          <?php echo h($flash["message"] ?? ""); ?>
+        </div>
+      <?php endif; ?>
+
       <div class="card">
         <form method="get" action="list.php" class="toolbar">
-          <div class="search" style="flex:1;min-width:260px;margin-bottom:0;">
+          <div class="search" style="flex:2.5;min-width:620px;margin-bottom:0;">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <circle cx="11" cy="11" r="7" stroke="#64748b" stroke-width="2"/>
               <path d="M20 20l-3.5-3.5" stroke="#64748b" stroke-width="2" stroke-linecap="round"/>
@@ -217,7 +227,7 @@ $name = $_SESSION["name"] ?? "User";
           </div>
 
           <select name="dept_id" aria-label="Filter by department">
-            <option value="">All Departments</option>
+            <option value="">Departments</option>
             <?php foreach ($departments as $d): ?>
               <option
                 value="<?php echo (int)$d["dept_id"]; ?>"
@@ -229,7 +239,7 @@ $name = $_SESSION["name"] ?? "User";
           </select>
 
           <select name="semester" aria-label="Filter by semester">
-            <option value="">All Semesters</option>
+            <option value="">Semesters</option>
             <?php foreach ($semesterOptions as $num => $label): ?>
               <option
                 value="<?php echo h($num); ?>"
@@ -240,25 +250,33 @@ $name = $_SESSION["name"] ?? "User";
             <?php endforeach; ?>
           </select>
 
-          <button class="btn btn-primary" type="submit">Filter</button>
+          <select name="per_page" aria-label="Rows per page">
+            <option value="5" <?php echo $perPage === 5 ? "selected" : ""; ?>>5</option>
+            <option value="10" <?php echo $perPage === 10 ? "selected" : ""; ?>>10</option>
+            <option value="20" <?php echo $perPage === 20 ? "selected" : ""; ?>>20</option>
+            <option value="50" <?php echo $perPage === 50 ? "selected" : ""; ?>>50</option>
+          </select>
+
+          <button class="btn btn-primary" type="submit">Apply</button>
           <a class="btn" href="list.php">Reset</a>
         </form>
 
+        <div class="live-results">
         <table>
           <thead>
             <tr>
-              <th style="width:140px;">Student ID</th>
-              <th style="width:220px;">Name</th>
-              <th style="width:240px;">Email</th>
-              <th style="width:220px;">Department</th>
-              <th style="width:130px;">Semester</th>
-              <th style="width:170px; text-align:right;">Actions</th>
+              <th style="width:140px; text-align:center;">Student ID</th>
+              <th style="width:220px; text-align:center;">Name</th>
+              <th style="width:240px; text-align:center;">Email</th>
+              <th style="width:220px; text-align:center;">Department</th>
+              <th style="width:130px; text-align:center;">Semester</th>
+              <th style="width:170px; text-align:center;">Actions</th>
             </tr>
           </thead>
           <tbody>
             <?php if (count($rows) === 0): ?>
               <tr>
-                <td colspan="6" class="muted">No students found.</td>
+                <td colspan="6" class="muted" style="text-align:center;">No students found.</td>
               </tr>
             <?php else: ?>
               <?php foreach ($rows as $s): ?>
@@ -269,11 +287,11 @@ $name = $_SESSION["name"] ?? "User";
                   $semester = $hasSemester ? (string)($s["semester"] ?? "") : "";
                 ?>
                 <tr>
-                  <td><?php echo h($sid); ?></td>
-                  <td><?php echo h($s["student_name"]); ?></td>
-                  <td><?php echo h($email !== "" ? $email : "-"); ?></td>
-                  <td><?php echo h($s["dept_name"] ?? "-"); ?></td>
-                  <td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($sid); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($s["student_name"]); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($email !== "" ? $email : "-"); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($s["dept_name"] ?? "-"); ?></td>
+                  <td style="text-align:center; vertical-align:middle;">
                     <?php
                       if ($semester !== "" && isset($semesterOptions[(string)$semester])) {
                           echo h($semesterOptions[(string)$semester]);
@@ -282,8 +300,8 @@ $name = $_SESSION["name"] ?? "User";
                       }
                     ?>
                   </td>
-                  <td style="text-align:right;">
-                    <div class="actions">
+                  <td style="text-align:center; vertical-align:middle;">
+                    <div class="actions" style="justify-content:center;">
                       <a class="icon-btn icon-view" href="view.php?student_id=<?php echo $id; ?>" title="View">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                           <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" stroke-width="2"/>
@@ -322,7 +340,7 @@ $name = $_SESSION["name"] ?? "User";
           </div>
 
           <div class="pager">
-            <a href="<?php echo h(pageUrl(max(1, $page - 1), $search, $deptFilter, $semesterFilter)); ?>">Previous</a>
+            <a href="<?php echo h(pageUrl(max(1, $page - 1), $search, $deptFilter, $semesterFilter, $perPage)); ?>">Previous</a>
             <?php
               $start = max(1, $page - 2);
               $end = min($totalPages, $page + 2);
@@ -330,13 +348,14 @@ $name = $_SESSION["name"] ?? "User";
             ?>
               <a
                 class="<?php echo $p === $page ? "active" : ""; ?>"
-                href="<?php echo h(pageUrl($p, $search, $deptFilter, $semesterFilter)); ?>"
+                href="<?php echo h(pageUrl($p, $search, $deptFilter, $semesterFilter, $perPage)); ?>"
               >
                 <?php echo $p; ?>
               </a>
             <?php endfor; ?>
-            <a href="<?php echo h(pageUrl(min($totalPages, $page + 1), $search, $deptFilter, $semesterFilter)); ?>">Next</a>
+            <a href="<?php echo h(pageUrl(min($totalPages, $page + 1), $search, $deptFilter, $semesterFilter, $perPage)); ?>">Next</a>
           </div>
+        </div>
         </div>
 
       </div>

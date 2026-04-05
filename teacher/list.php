@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -32,10 +33,12 @@ $hasTeacherCode = colExists($conn, "dbo.TEACHER", "teacher_code") || colExists($
 $search = trim($_GET["q"] ?? "");
 $deptFilter = trim($_GET["dept_id"] ?? "");
 $designationFilter = trim($_GET["designation"] ?? "");
+$flash = umsPullFlash("teachers");
 $page = (int)($_GET["page"] ?? 1);
 if ($page < 1) $page = 1;
 
-$perPage = 5;
+$perPage = (int)($_GET["per_page"] ?? 5);
+if (!in_array($perPage, [5, 10, 20, 50], true)) $perPage = 5;
 $offset = ($page - 1) * $perPage;
 
 /* department options */
@@ -140,11 +143,12 @@ function teacherLabel($row, $hasTeacherCode) {
     return "T" . str_pad((string)$id, 3, "0", STR_PAD_LEFT);
 }
 
-function pageUrl($p, $q, $deptId, $designation) {
+function pageUrl($p, $q, $deptId, $designation, $perPage) {
     $qs = [];
     if ($q !== "") $qs["q"] = $q;
     if ($deptId !== "") $qs["dept_id"] = $deptId;
     if ($designation !== "") $qs["designation"] = $designation;
+    if ($perPage !== 5) $qs["per_page"] = $perPage;
     $qs["page"] = $p;
     return "list.php?" . http_build_query($qs);
 }
@@ -159,7 +163,7 @@ $name = $_SESSION["name"] ?? "User";
   <title>Teachers</title>
   <link rel="stylesheet" href="../assets/app.css">
 </head>
-<body>
+<body class="list-page">
 <div class="layout">
 
   <?php renderSidebar("teachers", "../"); ?>
@@ -176,9 +180,15 @@ $name = $_SESSION["name"] ?? "User";
         </a>
       </div>
 
+      <?php if ($flash): ?>
+        <div class="<?php echo $flash["type"] === "success" ? "alert-ok" : "alert-err"; ?>">
+          <?php echo h($flash["message"] ?? ""); ?>
+        </div>
+      <?php endif; ?>
+
       <div class="card">
         <form method="get" action="list.php" class="toolbar">
-          <div class="search" style="flex:1;min-width:260px;margin-bottom:0;">
+          <div class="search" style="flex:2.5;min-width:620px;margin-bottom:0;">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <circle cx="11" cy="11" r="7" stroke="#64748b" stroke-width="2"/>
               <path d="M20 20l-3.5-3.5" stroke="#64748b" stroke-width="2" stroke-linecap="round"/>
@@ -192,7 +202,7 @@ $name = $_SESSION["name"] ?? "User";
           </div>
 
           <select name="dept_id" aria-label="Filter by department">
-            <option value="">All Departments</option>
+            <option value="">Departments</option>
             <?php foreach ($departments as $d): ?>
               <option
                 value="<?php echo (int)$d["dept_id"]; ?>"
@@ -204,7 +214,7 @@ $name = $_SESSION["name"] ?? "User";
           </select>
 
           <select name="designation" aria-label="Filter by designation">
-            <option value="">All Designations</option>
+            <option value="">Designations</option>
             <?php foreach ($designationOptions as $designation): ?>
               <option
                 value="<?php echo h($designation); ?>"
@@ -215,24 +225,32 @@ $name = $_SESSION["name"] ?? "User";
             <?php endforeach; ?>
           </select>
 
-          <button class="btn btn-primary" type="submit">Filter</button>
+          <select name="per_page" aria-label="Rows per page">
+            <option value="5" <?php echo $perPage === 5 ? "selected" : ""; ?>>5</option>
+            <option value="10" <?php echo $perPage === 10 ? "selected" : ""; ?>>10</option>
+            <option value="20" <?php echo $perPage === 20 ? "selected" : ""; ?>>20</option>
+            <option value="50" <?php echo $perPage === 50 ? "selected" : ""; ?>>50</option>
+          </select>
+
+          <button class="btn btn-primary" type="submit">Apply</button>
           <a class="btn" href="list.php">Reset</a>
         </form>
 
+        <div class="live-results">
         <table>
           <thead>
             <tr>
-              <th style="width:120px;">Teacher ID</th>
-              <th style="width:220px;">Name</th>
-              <th style="width:240px;">Email</th>
-              <th style="width:220px;">Department</th>
-              <th style="width:190px;">Designation</th>
-              <th style="width:140px; text-align:right;">Actions</th>
+              <th style="width:120px; text-align:center;">Teacher ID</th>
+              <th style="width:220px; text-align:center;">Name</th>
+              <th style="width:240px; text-align:center;">Email</th>
+              <th style="width:220px; text-align:center;">Department</th>
+              <th style="width:190px; text-align:center;">Designation</th>
+              <th style="width:140px; text-align:center;">Actions</th>
             </tr>
           </thead>
           <tbody>
             <?php if (count($rows) === 0): ?>
-              <tr><td colspan="6" class="muted">No teachers found.</td></tr>
+              <tr><td colspan="6" class="muted" style="text-align:center;">No teachers found.</td></tr>
             <?php else: ?>
               <?php foreach ($rows as $t): ?>
                 <?php
@@ -242,13 +260,13 @@ $name = $_SESSION["name"] ?? "User";
                   $designation = $hasDesignation ? (string)($t["designation"] ?? "") : "";
                 ?>
                 <tr>
-                  <td><?php echo h($tid); ?></td>
-                  <td><?php echo h($t["name"]); ?></td>
-                  <td><?php echo h($email !== "" ? $email : "-"); ?></td>
-                  <td><?php echo h($t["dept_name"]); ?></td>
-                  <td><?php echo h($designation !== "" ? $designation : "-"); ?></td>
-                  <td style="text-align:right;">
-                    <div class="actions">
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($tid); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($t["name"]); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($email !== "" ? $email : "-"); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($t["dept_name"]); ?></td>
+                  <td style="text-align:center; vertical-align:middle;"><?php echo h($designation !== "" ? $designation : "-"); ?></td>
+                  <td style="text-align:center; vertical-align:middle;">
+                    <div class="actions" style="justify-content:center;">
                       <a class="icon-btn icon-edit" href="edit.php?teacher_id=<?php echo $id; ?>" title="Edit">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                           <path d="M12 20h9" stroke-width="2" stroke-linecap="round"/>
@@ -280,7 +298,7 @@ $name = $_SESSION["name"] ?? "User";
           </div>
 
           <div class="pager">
-            <a href="<?php echo h(pageUrl(max(1, $page - 1), $search, $deptFilter, $designationFilter)); ?>">Previous</a>
+            <a href="<?php echo h(pageUrl(max(1, $page - 1), $search, $deptFilter, $designationFilter, $perPage)); ?>">Previous</a>
             <?php
               $start = max(1, $page - 2);
               $end = min($totalPages, $page + 2);
@@ -288,13 +306,14 @@ $name = $_SESSION["name"] ?? "User";
             ?>
               <a
                 class="<?php echo $p === $page ? "active" : ""; ?>"
-                href="<?php echo h(pageUrl($p, $search, $deptFilter, $designationFilter)); ?>"
+                href="<?php echo h(pageUrl($p, $search, $deptFilter, $designationFilter, $perPage)); ?>"
               >
                 <?php echo $p; ?>
               </a>
             <?php endfor; ?>
-            <a href="<?php echo h(pageUrl(min($totalPages, $page + 1), $search, $deptFilter, $designationFilter)); ?>">Next</a>
+            <a href="<?php echo h(pageUrl(min($totalPages, $page + 1), $search, $deptFilter, $designationFilter, $perPage)); ?>">Next</a>
           </div>
+        </div>
         </div>
 
       </div>

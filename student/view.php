@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . "/../db.php";
 require_once __DIR__ . "/../partials/layout.php";
+require_once __DIR__ . "/../partials/feedback.php";
 
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
@@ -68,6 +69,8 @@ if ($student_id <= 0) {
     header("Location: list.php");
     exit();
 }
+
+$flash = umsPullFlash("student_view");
 
 $studentTable = "STUDENT";
 $deptTable = "DEPARTMENT";
@@ -372,10 +375,16 @@ $name = $_SESSION["name"] ?? "User";
       <div class="header">
         <h1>Student Details</h1>
         <div class="action-bar">
-          <a class="btn" href="../result/list.php">View Results</a>
+          <a class="btn" href="../result/view.php?student_id=<?php echo (int)$student["student_id"]; ?>&back=student">View Results</a>
           <a class="btn btn-primary" href="edit.php?student_id=<?php echo (int)$student["student_id"]; ?>">Edit Student</a>
         </div>
       </div>
+
+      <?php if ($flash): ?>
+        <div class="<?php echo $flash["type"] === "success" ? "alert-ok" : "alert-err"; ?>">
+          <?php echo h($flash["message"] ?? ""); ?>
+        </div>
+      <?php endif; ?>
 
       <div class="student-view-grid">
         <div class="student-view-left">

@@ -62,7 +62,13 @@ function renderSidebar($active, $basePath = "") {
     ];
 
     echo '<aside class="sidebar">';
-    echo '<div class="brand">UMS</div>';
+    echo '<div class="brand">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3 2 8l10 5 10-5-10-5Z" stroke="#2f3cff" stroke-width="2" stroke-linejoin="round"/>
+              <path d="M6 10v6c0 1.1 2.7 2 6 2s6-.9 6-2v-6" stroke="#2f3cff" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            UMS
+          </div>';
     echo '<nav class="nav">';
 
     foreach ($items as $item) {
@@ -97,4 +103,89 @@ function renderTopbar($name, $email = "", $logoutHref = "logout.php", $showEmail
               Logout
             </a>';
     echo '</div>';
+    echo '<script>
+            document.addEventListener("DOMContentLoaded", function () {
+              document.querySelectorAll(".alert-ok, .alert-err, .msg-ok, .alert").forEach(function (messageEl) {
+                window.setTimeout(function () {
+                  messageEl.classList.add("flash-hide");
+                  window.setTimeout(function () {
+                    if (messageEl && messageEl.parentNode) {
+                      messageEl.parentNode.removeChild(messageEl);
+                    }
+                  }, 300);
+                }, 5000);
+              });
+
+              var searchInputs = document.querySelectorAll(".search input[name=\"q\"]");
+
+              searchInputs.forEach(function (input) {
+                var form = input.form;
+                var card = form ? form.closest(".card") : null;
+                var results = card ? card.querySelector(".live-results") : null;
+                var timerId = null;
+                var activeController = null;
+
+                if (!form || !results || (form.method || "").toLowerCase() !== "get") {
+                  return;
+                }
+
+                input.addEventListener("input", function () {
+                  window.clearTimeout(timerId);
+
+                  timerId = window.setTimeout(function () {
+                    var formData = new FormData(form);
+                    formData.set("q", input.value);
+                    formData.set("page", "1");
+
+                    var targetUrl = new URL(form.getAttribute("action") || window.location.pathname, window.location.href);
+                    var params = new URLSearchParams();
+
+                    formData.forEach(function (value, key) {
+                      if (value !== null && value !== "") {
+                        params.set(key, value);
+                      }
+                    });
+
+                    targetUrl.search = params.toString();
+
+                    if (activeController) {
+                      activeController.abort();
+                    }
+
+                    activeController = new AbortController();
+
+                    fetch(targetUrl.toString(), {
+                      signal: activeController.signal,
+                      headers: {
+                        "X-Requested-With": "XMLHttpRequest"
+                      }
+                    })
+                      .then(function (response) {
+                        if (!response.ok) {
+                          throw new Error("Request failed");
+                        }
+                        return response.text();
+                      })
+                      .then(function (html) {
+                        var parser = new DOMParser();
+                        var doc = parser.parseFromString(html, "text/html");
+                        var nextResults = doc.querySelector(".live-results");
+
+                        if (!nextResults) {
+                          throw new Error("Results block not found");
+                        }
+
+                        results.innerHTML = nextResults.innerHTML;
+                        window.history.replaceState(null, "", targetUrl.toString());
+                      })
+                      .catch(function (error) {
+                        if (error.name === "AbortError") {
+                          return;
+                        }
+                      });
+                  }, 300);
+                });
+              });
+            });
+          </script>';
 }
